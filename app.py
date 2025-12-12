@@ -25,10 +25,10 @@ BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
 SHEET_LOG_NAME = "log_lanthucthi"
 
-# --- TÊN 3 CỘT CỐ ĐỊNH (SẼ NẰM Ở CUỐI BẢNG) ---
+# --- TÊN CỘT CHUẨN (CỐ ĐỊNH ĐỂ KHÔNG BỊ NHẢY CỘT) ---
+COL_MONTH_FIXED = "Tháng Chốt"
 COL_LINK_SRC = "Link file nguồn"
 COL_SHEET_SRC = "Sheet nguồn"
-COL_MONTH_FIX = "Tháng chốt"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
@@ -180,6 +180,8 @@ def manual_scan(df):
 def fetch_single_csv_with_id(row_config, token):
     link_src = row_config.get('Link dữ liệu lấy dữ liệu', '')
     sheet_name = row_config.get('Tên sheet dữ liệu', '')
+    # Tên nguồn này chỉ để hiển thị
+    display_label = row_config.get('Tên nguồn (Nhãn)', '')
     month_val = str(row_config.get('Tháng', ''))
     
     sheet_id = extract_id(link_src)
@@ -190,23 +192,36 @@ def fetch_single_csv_with_id(row_config, token):
     try:
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code == 200:
+            # Đọc CSV với schema length=0 (Text hết)
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
             
-            # --- TẠO 3 CỘT CỐ ĐỊNH (Chuẩn bị cho bước Gộp) ---
+            # --- CỐ ĐỊNH TÊN CỘT (QUAN TRỌNG) ---
+            # 1. System_Source_ID: Để xóa dữ liệu cũ
+            # 2. COL_MONTH_FIXED: Cột "Tháng Chốt" để sort
+            # 3. COL_LINK_SRC, COL_SHEET_SRC: Thông tin thêm
+            
             df = df.with_columns([
-                # System ID để dùng cho logic xóa (Ẩn danh)
                 pl.lit(sheet_id).alias("System_Source_ID"), 
-                
-                # 3 Cột hiển thị theo yêu cầu
+                pl.lit(display_label).alias("Tên_Nguồn"),
                 pl.lit(link_src).cast(pl.Utf8).alias(COL_LINK_SRC),
                 pl.lit(sheet_name).cast(pl.Utf8).alias(COL_SHEET_SRC),
-                pl.lit(month_val).cast(pl.Utf8).alias(COL_MONTH_FIX)
+                # Ép kiểu String cho cột Tháng Chốt
+                pl.lit(month_val).cast(pl.Utf8).alias(COL_MONTH_FIXED)
             ])
             return df, sheet_id, "Thành công"
         return None, sheet_id, "Lỗi HTTP"
     except Exception as e: return None, sheet_id, str(e)
 
 def smart_update_and_sort_all(df_new_updates, target_link, creds, ids_to_remove):
+    """
+    Logic:
+    1. Đọc dữ liệu Đích.
+    2. CHUẨN HÓA CỘT THÁNG của dữ liệu Đích (để khớp với Mới).
+    3. Xóa dữ liệu cũ (Filter theo ID).
+    4. Gộp (Concat) -> Sẽ tự động khớp cột vì đã chuẩn hóa tên.
+    5. Sort theo Tháng Chốt.
+    6. Ghi.
+    """
     try:
         gc = gspread.authorize(creds)
         target_id = extract_id(target_link)
@@ -229,61 +244,71 @@ def smart_update_and_sort_all(df_new_updates, target_link, creds, ids_to_remove)
             if r.status_code == 200:
                 df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
                 
-                # --- CHUẨN HÓA TÊN CỘT CŨ (Fix lỗi nhảy cột) ---
+                # --- CHUẨN HÓA TÊN CỘT TRONG FILE ĐÍCH ---
+                # Tìm xem cột nào là cột Tháng cũ (có thể là 'Tháng', 'System_Month_Sort'...)
+                # Đổi hết về tên chuẩn COL_MONTH_FIXED
                 rename_map = {}
                 for col in df_current.columns:
                     c = col.strip()
-                    # Map các tên cũ về tên chuẩn
-                    if c in ["Link Nguồn", "Link URL nguồn", "Link"]: rename_map[col] = COL_LINK_SRC
-                    if c in ["Tên sheet nguồn", "Sheet Name"]: rename_map[col] = COL_SHEET_SRC
-                    if c in ["Tháng", "Tháng Chốt", "System_Month_Sort"]: rename_map[col] = COL_MONTH_FIX
+                    if c in ["Tháng", "System_Month_Sort", "Tháng Chốt", "tháng chốt"]:
+                        rename_map[col] = COL_MONTH_FIXED
+                    elif c in ["Link Nguồn", "Link URL nguồn"]:
+                        rename_map[col] = COL_LINK_SRC
+                    elif c in ["Tên sheet nguồn"]:
+                        rename_map[col] = COL_SHEET_SRC
                 
                 if rename_map:
                     df_current = df_current.rename(rename_map)
+                
+                # Đảm bảo cột Tháng Chốt là String
+                if COL_MONTH_FIXED in df_current.columns:
+                    df_current = df_current.with_columns(pl.col(COL_MONTH_FIXED).cast(pl.Utf8))
+
         except: pass
 
-        # Filter Old Data
+        # --- BƯỚC 1: XÓA CŨ (Dựa trên System_Source_ID) ---
         if not df_current.is_empty():
             if "System_Source_ID" in df_current.columns:
+                # Giữ lại những dòng KHÔNG thuộc về các ID đang update
                 df_keep = df_current.filter(~pl.col("System_Source_ID").is_in(ids_to_remove))
             else:
+                # Nếu file đích chưa có cột ID (lần đầu chạy tool), thì coi như giữ nguyên
                 df_keep = df_current 
         else:
             df_keep = pl.DataFrame()
 
-        # Merge
+        # --- BƯỚC 2: GỘP (Concat) ---
+        # Lúc này df_keep và df_new_updates đều đã có cột chuẩn COL_MONTH_FIXED
         if not df_new_updates.is_empty():
             df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
         else:
             df_final = df_keep
 
-        # --- SẮP XẾP CỘT (REORDER COLUMNS) ---
-        # Đưa 3 cột Link, Sheet, Tháng về cuối cùng
+        # --- BƯỚC 3: SẮP XẾP CỘT (Reorder) ---
+        # Đưa các cột quản lý về cuối
         all_cols = df_final.columns
-        # Các cột không phải 3 cột metadata và không phải System ID
-        data_cols = [c for c in all_cols if c not in [COL_LINK_SRC, COL_SHEET_SRC, COL_MONTH_FIX, "System_Source_ID"]]
+        # Các cột data (trừ cột quản lý)
+        meta_cols = [COL_LINK_SRC, COL_SHEET_SRC, COL_MONTH_FIXED, "System_Source_ID", "Tên_Nguồn"]
+        data_cols = [c for c in all_cols if c not in meta_cols]
         
-        # Thứ tự mong muốn: [Data...] + [Link] + [Sheet] + [Tháng] + [System_ID]
-        # System_ID cần giữ lại để lần sau xóa cho đúng
-        desired_order = data_cols + [COL_LINK_SRC, COL_SHEET_SRC, COL_MONTH_FIX, "System_Source_ID"]
-        
-        # Chỉ select những cột có thật trong dataframe
+        # Thứ tự: [Data] + [Link] + [Sheet] + [Tháng Chốt] + [System_ID] + [Tên Nguồn]
+        desired_order = data_cols + [COL_LINK_SRC, COL_SHEET_SRC, COL_MONTH_FIXED, "System_Source_ID", "Tên_Nguồn"]
         final_cols = [c for c in desired_order if c in df_final.columns]
         df_final = df_final.select(final_cols)
 
-        # Sort Rows by Month
-        if COL_MONTH_FIX in df_final.columns:
+        # --- BƯỚC 4: SẮP XẾP DÒNG (Sort Rows by Month) ---
+        if COL_MONTH_FIXED in df_final.columns:
             try:
                 df_final = df_final.with_columns(
-                    pl.col(COL_MONTH_FIX)
+                    pl.col(COL_MONTH_FIXED)
                     .str.strptime(pl.Date, "%m/%Y", strict=False)
-                    .alias("temp_sort")
+                    .alias("temp_date_sort")
                 )
-                df_final = df_final.sort("temp_sort", descending=False).drop("temp_sort")
+                df_final = df_final.sort("temp_date_sort", descending=False).drop("temp_date_sort")
             except:
-                df_final = df_final.sort(COL_MONTH_FIX)
+                df_final = df_final.sort(COL_MONTH_FIXED)
 
-        # Write
+        # --- BƯỚC 5: GHI TỪ DÒNG 2 ---
         pdf = df_final.to_pandas().fillna('')
         data_values = pdf.values.tolist()
         
@@ -293,7 +318,7 @@ def smart_update_and_sort_all(df_new_updates, target_link, creds, ids_to_remove)
         else:
             wks.batch_clear([f"A2:ZZ{wks.row_count}"])
 
-        return True, f"Cập nhật xong. Tổng: {len(pdf)} dòng."
+        return True, f"Đã xóa cũ, thêm mới & sắp xếp lại. Tổng: {len(pdf)} dòng."
 
     except Exception as e: return False, str(e)
 
@@ -390,7 +415,7 @@ def main_ui():
             data["Hành động"] = ["Xóa & Cập nhật"]
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info("💡 **Logic:** Chỉ xử lý 'Chưa chốt'. 3 Cột Link/Sheet/Tháng sẽ nằm cuối cùng.")
+    st.info("💡 **Logic:** Xóa sạch dữ liệu cũ -> Ghi mới -> Sắp xếp theo Tháng Chốt.")
 
     if 'scan_errors' in st.session_state and st.session_state['scan_errors']:
         st.error(f"⚠️ Có {len(st.session_state['scan_errors'])} link lỗi!")
