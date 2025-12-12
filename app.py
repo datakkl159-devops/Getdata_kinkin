@@ -8,12 +8,13 @@ import time
 import gspread
 from datetime import datetime
 from google.oauth2 import service_account
-import google.auth.transport.requests # Fix lỗi auth
+import google.auth.transport.requests
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 st.set_page_config(page_title="Tool Xử Lý Data (Copy 1:1)", layout="wide")
 PASSWORD_ACCESS = "admin2024"
 BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
+SHEET_CONFIG_NAME = "luu_cau_hinh" # Tên tab cố định
 
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets', 
@@ -36,9 +37,7 @@ def check_login():
     return True
 
 def get_creds():
-    # Lấy thông tin từ Secrets
     creds_info = dict(st.secrets["gcp_service_account"])
-    # Tự động sửa lỗi xuống dòng trong Private Key
     if "private_key" in creds_info:
         creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
@@ -49,7 +48,7 @@ def extract_id(url):
         except: return None
     return None
 
-# --- 3. QUẢN LÝ LỊCH SỬ (ĐÃ FIX LỖI GHI) ---
+# --- 3. QUẢN LÝ LỊCH SỬ (LOGIC MỚI: TỰ TẠO HOẶC GHI ĐÈ) ---
 def load_history_config(creds):
     history_id = st.secrets["gcp_service_account"].get("history_sheet_id")
     if not history_id: return None
@@ -57,9 +56,13 @@ def load_history_config(creds):
     try:
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(history_id)
-        # Thử lấy tab 'Luu_Cau_Hinh', nếu ko có lấy tab đầu
-        try: wks = sh.worksheet("Luu_Cau_Hinh")
-        except: wks = sh.get_worksheet(0)
+        
+        # Cố gắng tìm đúng tab "luu_cau_hinh"
+        try: 
+            wks = sh.worksheet(SHEET_CONFIG_NAME)
+        except: 
+            # Nếu không tìm thấy tab đó thì trả về None (để dùng mặc định)
+            return None
         
         data = wks.get_all_records()
         if not data: return None
@@ -74,27 +77,32 @@ def load_history_config(creds):
         return None
 
 def save_history_config(df, creds):
-    """Ghi đè lịch sử (Raw Write để đảm bảo thành công)"""
+    """
+    Logic: Tìm tab 'luu_cau_hinh'. 
+    - Chưa có -> Tạo mới.
+    - Có rồi -> Xóa sạch cũ -> Ghi mới (Cập nhật bản mới nhất).
+    """
     history_id = st.secrets["gcp_service_account"].get("history_sheet_id")
     if not history_id:
-        st.error("⚠️ Lỗi: Chưa có ID Sheet Lịch Sử trong Secrets!")
+        st.error("⚠️ Lỗi: Chưa cấu hình ID Sheet Lịch Sử!")
         return
 
     try:
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(history_id)
         
-        # Tìm hoặc tạo tab
-        try: wks = sh.worksheet("Luu_Cau_Hinh")
-        except: 
-            wks = sh.get_worksheet(0)
-            wks.update_title("Luu_Cau_Hinh")
+        # 1. Kiểm tra và Tạo Tab
+        try:
+            wks = sh.worksheet(SHEET_CONFIG_NAME)
+        except gspread.WorksheetNotFound:
+            # Nếu chưa có thì TẠO MỚI
+            wks = sh.add_worksheet(title=SHEET_CONFIG_NAME, rows=100, cols=20)
             
-        wks.clear() # Xóa sạch
+        # 2. Ghi Dữ Liệu (Xóa cũ ghi mới)
+        wks.clear() # Xóa sạch dữ liệu cũ để đảm bảo không bị thừa dòng rác
         
-        # Chuẩn bị dữ liệu
         pdf = df.copy()
-        # Chuyển bool -> TRUE/FALSE text cho Google Sheet hiểu
+        # Chuyển bool -> TRUE/FALSE text
         if 'Hành động' in pdf.columns:
             pdf['Hành động'] = pdf['Hành động'].apply(lambda x: "TRUE" if x else "FALSE")
         
@@ -102,10 +110,10 @@ def save_history_config(df, creds):
         data_to_write = [pdf.columns.tolist()] + pdf.values.tolist()
         
         wks.update(data_to_write)
-        st.toast("✅ Đã lưu cấu hình vào Sheet Lịch Sử!", icon="💾")
+        st.toast(f"✅ Đã cập nhật bản mới nhất vào tab '{SHEET_CONFIG_NAME}'", icon="💾")
         
     except Exception as e:
-        st.error(f"❌ KHÔNG LƯU ĐƯỢC LỊCH SỬ: {e}")
+        st.error(f"❌ LỖI LƯU LỊCH SỬ: {e}")
 
 # --- 4. CORE ENGINE: COPY 1:1 ---
 def verify_access_fast(url, creds):
@@ -127,7 +135,6 @@ def fetch_single_csv_raw(row_config, token):
     try:
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code == 200:
-            # infer_schema_length=0 -> Đọc tất cả là TEXT (Giữ nguyên bản 100%)
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
             return df
         return None
@@ -150,7 +157,6 @@ def write_to_google_sheet(df, target_link, creds):
 
 def process_pipeline_raw(selected_rows):
     creds = get_creds()
-    # Fix lỗi TypeError request cũ
     auth_req = google.auth.transport.requests.Request() 
     creds.refresh(auth_req)
     token = creds.token
@@ -163,7 +169,6 @@ def process_pipeline_raw(selected_rows):
             if data is not None: results.append(data)
     
     if results:
-        # Gộp dọc (Vertical) - Các file phải cùng cột
         df_big = pl.concat(results, how="vertical", rechunk=True)
         return df_big
     return None
@@ -175,18 +180,17 @@ def main_ui():
     # LOAD HISTORY
     if 'df_config' not in st.session_state:
         creds = get_creds()
-        with st.spinner("⏳ Đang tải lịch sử..."):
+        with st.spinner("⏳ Đang tải bản lưu mới nhất..."):
             df_history = load_history_config(creds)
             
         if df_history is not None and not df_history.empty:
             expected_cols = ["Hành động", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", 
                              "Link dữ liệu đích", "Tên sheet dữ liệu", "Tên nguồn (Nhãn)", "Trạng thái"]
-            # Fill cột thiếu
             for col in expected_cols:
                 if col not in df_history.columns:
                     df_history[col] = "" if col != "Hành động" else False
             st.session_state['df_config'] = df_history[expected_cols]
-            st.toast("Đã khôi phục cấu hình!", icon="📂")
+            st.toast(f"Đã tải cấu hình từ tab '{SHEET_CONFIG_NAME}'", icon="📂")
         else:
             # Mặc định
             data = {
@@ -201,7 +205,7 @@ def main_ui():
             }
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info(f"💡 Chế độ **Nguyên Bản**: Dữ liệu sẽ được gộp và ghi đè y chang nguồn (không thêm cột, không sửa số).")
+    st.info(f"💡 Hệ thống sẽ tự động lưu vào tab **'{SHEET_CONFIG_NAME}'** mỗi khi bạn bấm nút.")
 
     # EDITOR
     edited_df = st.data_editor(
@@ -210,14 +214,14 @@ def main_ui():
         column_config={
             "Hành động": st.column_config.CheckboxColumn("Chọn", width="small"),
             "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"),
-            "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"),
+            "Link dữ liệu đích": st.column_config.TextColumn("Link Đích (Ghi vào)", width="medium"),
             "Trạng thái": st.column_config.TextColumn("Trạng thái", disabled=True, width="medium"),
         },
         use_container_width=True,
         key="editor"
     )
 
-    # AUTO CHECK LOGIC
+    # AUTO CHECK
     if not edited_df.equals(st.session_state['df_config']):
         try:
             creds = get_creds()
@@ -226,11 +230,9 @@ def main_ui():
                 link_dst = row['Link dữ liệu đích']
                 new_status_parts = []
                 
-                # Check Nguồn
                 if link_src and "docs.google.com" in str(link_src):
                     ok, msg = verify_access_fast(link_src, creds)
                     if not ok: new_status_parts.append(f"Nguồn: {msg}")
-                # Check Đích
                 if link_dst and "docs.google.com" in str(link_dst):
                     ok, msg = verify_access_fast(link_dst, creds)
                     if not ok: new_status_parts.append(f"Đích: {msg}")
@@ -265,7 +267,7 @@ def main_ui():
             selected_rows = edited_df[edited_df["Hành động"] == True].to_dict('records')
             
             # Auto Save History
-            with st.spinner("💾 Đang lưu cấu hình..."):
+            with st.spinner(f"💾 Đang lưu bản mới nhất vào '{SHEET_CONFIG_NAME}'..."):
                 creds = get_creds()
                 save_history_config(edited_df, creds)
             
@@ -275,7 +277,7 @@ def main_ui():
                 st.error("❌ Cấp quyền trước khi chạy!")
                 st.stop()
             if not selected_rows:
-                st.warning("⚠️ Chọn ít nhất 1 dòng.")
+                st.warning("⚠️ Chọn ít nhất 1 dòng để chạy.")
             else:
                 target_link = selected_rows[0]['Link dữ liệu đích']
                 if not target_link:
