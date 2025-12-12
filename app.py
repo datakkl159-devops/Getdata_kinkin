@@ -307,7 +307,7 @@ def main_ui():
         
         c1, c2 = st.columns([3,1])
         with c1:
-            st.markdown(f"**👉 COPY Email Robot này và Share quyền Editor:**")
+            st.markdown(f"**👉 COPY Email Robot này và Share quyền Xem:**")
             st.code(BOT_EMAIL_DISPLAY, language="text")
         st.divider()
 
@@ -414,3 +414,4 @@ def main_ui():
 if __name__ == "__main__":
     if check_login():
         main_ui()
+
