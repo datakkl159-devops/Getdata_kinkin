@@ -4,3 +4,4 @@ polars
 requests
 google-auth
 xlsxwriter
+gspread
