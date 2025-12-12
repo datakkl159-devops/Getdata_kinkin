@@ -8,6 +8,7 @@ import time
 import gspread
 from datetime import datetime
 from google.oauth2 import service_account
+import google.auth.transport.requests  # <--- THÊM THƯ VIỆN QUAN TRỌNG NÀY
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 st.set_page_config(page_title="Tool Xử Lý Data", layout="wide")
@@ -38,10 +39,9 @@ def check_login():
     return True
 
 def get_creds():
-    # --- ĐOẠN CODE SỬA LỖI KEY ---
+    # --- ĐOẠN CODE SỬA LỖI KEY (GIỮ NGUYÊN) ---
     creds_info = dict(st.secrets["gcp_service_account"])
     
-    # Fix lỗi xuống dòng trong Private Key
     if "private_key" in creds_info:
         creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
 
@@ -110,7 +110,11 @@ def write_to_google_sheet(df, target_link, creds):
 
 def process_pipeline(selected_rows):
     creds = get_creds()
-    auth_req = requests.Request()
+    
+    # --- SỬA LỖI TYPE ERROR Ở ĐÂY ---
+    # Thay vì dùng requests.Request(), phải dùng google.auth.transport.requests.Request()
+    auth_req = google.auth.transport.requests.Request() 
+    
     creds.refresh(auth_req)
     token = creds.token
     
@@ -136,7 +140,6 @@ def process_pipeline(selected_rows):
 def main_ui():
     st.title("⚙️ Hệ Thống Xử Lý & Đẩy Data Tập Trung")
     
-    # Init Data
     if 'df_config' not in st.session_state:
         data = {
             "Hành động": [False, False], 
@@ -150,10 +153,8 @@ def main_ui():
         }
         st.session_state['df_config'] = pd.DataFrame(data)
 
-    # Info & Hướng dẫn
     st.info(f"💡 Nhập Link vào bảng ➡ Hệ thống tự động kiểm tra. Nếu báo **'⛔ Thiếu quyền'**, hãy **COPY Email Robot bên dưới** và Share quyền Editor cho nó.")
 
-    # Data Editor
     edited_df = st.data_editor(
         st.session_state['df_config'],
         num_rows="dynamic",
@@ -167,7 +168,6 @@ def main_ui():
         key="editor"
     )
 
-    # AUTO CHECK LOGIC
     if not edited_df.equals(st.session_state['df_config']):
         try:
             creds = get_creds()
@@ -193,7 +193,6 @@ def main_ui():
         except Exception as e:
             st.error(f"Lỗi cấu hình Key: {e}")
 
-    # HIỂN THỊ CẢNH BÁO EMAIL
     error_rows = edited_df[edited_df['Trạng thái'].astype(str).str.contains("Thiếu quyền", na=False)]
     if not error_rows.empty:
         st.divider()
@@ -208,7 +207,6 @@ def main_ui():
             st.write("")
             st.warning("Share xong nhớ sửa nhẹ 1 ký tự trong bảng để check lại.")
 
-    # RUN BUTTON
     st.divider()
     if st.button("▶️ TỔNG HỢP & GHI DATA", type="primary"):
         selected_rows = edited_df[edited_df["Hành động"] == True].to_dict('records')
