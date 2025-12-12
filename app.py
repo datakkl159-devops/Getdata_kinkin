@@ -12,28 +12,44 @@ from google.oauth2 import service_account
 import google.auth.transport.requests
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Tool Xử Lý Data (Copy 1:1)", layout="wide")
-PASSWORD_ACCESS = "admin2024"
+st.set_page_config(page_title="Tool Xử Lý Data (Multi-User)", layout="wide")
+
+# --- DANH SÁCH TÀI KHOẢN (Password : Tên Định Danh) ---
+# Bạn thêm bao nhiêu user vào đây cũng được
+AUTHORIZED_USERS = {
+    "admin2024": "Admin_Master",
+    "team_hn_123": "Team_HaNoi",
+    "team_hcm_456": "Team_HCM",
+    "kho_tong_789": "Kho_Tong",
+    # Thêm user mới theo cú pháp: "mật_khẩu": "tên_định_danh"
+}
+
 BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
-
-SCOPES = [
-    'https://www.googleapis.com/auth/spreadsheets', 
-    'https://www.googleapis.com/auth/drive'
-]
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # --- 2. HÀM HỖ TRỢ & BẢO MẬT ---
 def check_login():
+    """Kiểm tra mật khẩu và xác định danh tính User"""
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
+        st.session_state['current_user_id'] = None
+        
     if not st.session_state['logged_in']:
         st.header("🔒 Đăng nhập hệ thống")
-        pwd = st.text_input("Mật khẩu:", type="password")
+        pwd = st.text_input("Nhập mật khẩu truy cập:", type="password")
+        
         if st.button("Đăng Nhập"):
-            if pwd == PASSWORD_ACCESS:
+            # Kiểm tra xem mật khẩu có trong danh sách không
+            if pwd in AUTHORIZED_USERS:
                 st.session_state['logged_in'] = True
+                user_id = AUTHORIZED_USERS[pwd]
+                st.session_state['current_user_id'] = user_id # Lưu tên người dùng hiện tại
+                st.toast(f"Xin chào: {user_id}", icon="👋")
+                time.sleep(1)
                 st.rerun()
-            else: st.error("Sai mật khẩu!")
+            else:
+                st.error("Mật khẩu không đúng!")
         return False
     return True
 
@@ -49,8 +65,11 @@ def extract_id(url):
         except: return None
     return None
 
-# --- 3. QUẢN LÝ LỊCH SỬ (ĐÃ FIX LỖI DATE JSON) ---
-def load_history_config(creds):
+# --- 3. QUẢN LÝ LỊCH SỬ (LOGIC ĐA NGƯỜI DÙNG) ---
+def load_history_config(creds, current_user_id):
+    """
+    Tải toàn bộ, nhưng chỉ trả về dữ liệu của User đang đăng nhập.
+    """
     history_id = st.secrets["gcp_service_account"].get("history_sheet_id")
     if not history_id: return None
     
@@ -61,27 +80,40 @@ def load_history_config(creds):
         try: wks = sh.worksheet(SHEET_CONFIG_NAME)
         except: return None
         
-        data = wks.get_all_records()
-        if not data: return None
+        # Đọc toàn bộ dữ liệu của tất cả mọi người
+        df_all = get_as_dataframe(wks, evaluate_formulas=True)
+        if df_all.empty: return None
         
-        df = pd.DataFrame(data)
+        # Nếu chưa có cột User_ID thì trả về rỗng (chưa tương thích)
+        if 'User_ID' not in df_all.columns:
+            return None
+            
+        # LỌC: Chỉ lấy dòng của User hiện tại
+        df_user = df_all[df_all['User_ID'] == current_user_id].copy()
         
-        # 1. Fix lỗi Checkbox (String -> Bool)
-        if 'Hành động' in df.columns:
-            df['Hành động'] = df['Hành động'].astype(str).str.upper() == 'TRUE'
+        # Fix lỗi Checkbox & Date
+        if 'Hành động' in df_user.columns:
+            df_user['Hành động'] = df_user['Hành động'].astype(str).str.upper() == 'TRUE'
+        if 'Ngày chốt' in df_user.columns:
+            df_user['Ngày chốt'] = pd.to_datetime(df_user['Ngày chốt'], errors='coerce').dt.date
             
-        # 2. Fix lỗi Ngày tháng (String -> Date Object) để hiện đúng trên lịch
-        if 'Ngày chốt' in df.columns:
-            # Chuyển từ chuỗi "2025-12-12" thành đối tượng Date
-            df['Ngày chốt'] = pd.to_datetime(df['Ngày chốt'], errors='coerce').dt.date
+        # Bỏ cột User_ID khi hiển thị lên bảng (cho đỡ rối)
+        if 'User_ID' in df_user.columns:
+            df_user = df_user.drop(columns=['User_ID'])
             
-        return df
+        return df_user
     except Exception as e:
         print(f"Lỗi load history: {e}")
         return None
 
-def save_history_config(df, creds):
-    """Lưu lịch sử (Đã thêm xử lý Date -> String)"""
+def save_history_config(df_current_ui, creds, current_user_id):
+    """
+    Logic thông minh:
+    1. Tải data của tất cả user khác về.
+    2. Xóa data cũ của user hiện tại.
+    3. Gộp data mới của user hiện tại vào.
+    4. Ghi đè lại tất cả.
+    """
     history_id = st.secrets["gcp_service_account"].get("history_sheet_id")
     if not history_id:
         st.error("⚠️ Lỗi: Chưa có ID Sheet Lịch Sử!")
@@ -94,31 +126,53 @@ def save_history_config(df, creds):
         # Tìm hoặc tạo tab
         try:
             wks = sh.worksheet(SHEET_CONFIG_NAME)
+            # Tải dữ liệu hiện có (của tất cả mọi người)
+            df_all_existing = get_as_dataframe(wks, evaluate_formulas=True)
         except gspread.WorksheetNotFound:
             wks = sh.add_worksheet(title=SHEET_CONFIG_NAME, rows=100, cols=20)
+            df_all_existing = pd.DataFrame()
             
-        wks.clear() 
+        # --- XỬ LÝ DỮ LIỆU ĐỂ LƯU ---
         
-        pdf = df.copy()
+        # 1. Chuẩn bị dữ liệu MỚI của user hiện tại
+        df_new_user_data = df_current_ui.copy()
+        # Thêm cột định danh chủ sở hữu
+        df_new_user_data['User_ID'] = current_user_id 
         
-        # 1. Xử lý Checkbox -> String
-        if 'Hành động' in pdf.columns:
-            pdf['Hành động'] = pdf['Hành động'].apply(lambda x: "TRUE" if x else "FALSE")
+        # Chuẩn hóa định dạng (Date, Checkbox)
+        if 'Hành động' in df_new_user_data.columns:
+            df_new_user_data['Hành động'] = df_new_user_data['Hành động'].apply(lambda x: "TRUE" if x else "FALSE")
+        if 'Ngày chốt' in df_new_user_data.columns:
+            df_new_user_data['Ngày chốt'] = df_new_user_data['Ngày chốt'].astype(str)
             
-        # 2. XỬ LÝ DATE -> STRING (FIX LỖI JSON SERIALIZABLE)
-        if 'Ngày chốt' in pdf.columns:
-            pdf['Ngày chốt'] = pdf['Ngày chốt'].astype(str)
+        # 2. Xử lý dữ liệu CŨ trên Sheet
+        final_df = df_new_user_data # Mặc định là chỉ có cái mới (nếu sheet trống)
         
-        pdf = pdf.fillna('')
-        data_to_write = [pdf.columns.tolist()] + pdf.values.tolist()
+        if not df_all_existing.empty and 'User_ID' in df_all_existing.columns:
+            # Lọc lấy dữ liệu của NHỮNG NGƯỜI KHÁC (Giữ nguyên không đụng vào)
+            df_others = df_all_existing[df_all_existing['User_ID'] != current_user_id].copy()
+            
+            # Fix lỗi format khi đọc về để ghi lại không bị lỗi
+            if 'Ngày chốt' in df_others.columns:
+                df_others['Ngày chốt'] = df_others['Ngày chốt'].astype(str)
+            if 'Hành động' in df_others.columns:
+                df_others['Hành động'] = df_others['Hành động'].astype(str).str.upper()
+
+            # Gộp: [Của Người Khác] + [Của Mình Mới Sửa]
+            final_df = pd.concat([df_others, df_new_user_data], ignore_index=True)
+            
+        # 3. Ghi đè vào Sheet
+        wks.clear()
+        final_df = final_df.fillna('')
+        data_to_write = [final_df.columns.tolist()] + final_df.values.tolist()
         
         wks.update(data_to_write)
-        st.toast(f"✅ Đã cập nhật bản mới nhất vào tab '{SHEET_CONFIG_NAME}'", icon="💾")
+        st.toast(f"✅ Đã lưu cấu hình riêng cho: {current_user_id}", icon="💾")
         
     except Exception as e:
         st.error(f"❌ LỖI LƯU LỊCH SỬ: {e}")
 
-# --- 4. CORE ENGINE: COPY 1:1 ---
+# --- 4. CORE ENGINE (COPY 1:1) ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link sai"
@@ -178,13 +232,14 @@ def process_pipeline_raw(selected_rows):
 
 # --- 5. GIAO DIỆN CHÍNH ---
 def main_ui():
-    st.title("⚙️ Tool Tổng Hợp Data (Copy 1:1)")
+    user_id = st.session_state['current_user_id']
+    st.title(f"⚙️ Tool Xử Lý Data (User: {user_id})")
     
-    # LOAD HISTORY
+    # 1. LOAD CONFIG
     if 'df_config' not in st.session_state:
         creds = get_creds()
-        with st.spinner("⏳ Đang tải bản lưu mới nhất..."):
-            df_history = load_history_config(creds)
+        with st.spinner(f"⏳ Đang tải cấu hình của {user_id}..."):
+            df_history = load_history_config(creds, user_id)
             
         if df_history is not None and not df_history.empty:
             expected_cols = ["Hành động", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", 
@@ -193,8 +248,9 @@ def main_ui():
                 if col not in df_history.columns:
                     df_history[col] = "" if col != "Hành động" else False
             st.session_state['df_config'] = df_history[expected_cols]
-            st.toast(f"Đã tải cấu hình từ tab '{SHEET_CONFIG_NAME}'", icon="📂")
+            st.toast("Đã khôi phục cấu hình cá nhân!", icon="👤")
         else:
+            # Mặc định
             data = {
                 "Hành động": [False, False], 
                 "Ngày chốt": [datetime.now().date(), datetime.now().date()],
@@ -207,9 +263,9 @@ def main_ui():
             }
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info(f"💡 Hệ thống sẽ tự động lưu vào tab **'{SHEET_CONFIG_NAME}'** mỗi khi bạn bấm nút.")
+    st.info(f"💡 Dữ liệu bạn nhập sẽ được lưu riêng cho tài khoản **{user_id}**. Người khác không thấy cấu hình của bạn.")
 
-    # EDITOR
+    # 2. EDITOR
     edited_df = st.data_editor(
         st.session_state['df_config'],
         num_rows="dynamic",
@@ -224,7 +280,7 @@ def main_ui():
         key="editor"
     )
 
-    # AUTO CHECK
+    # 3. AUTO CHECK
     if not edited_df.equals(st.session_state['df_config']):
         try:
             creds = get_creds()
@@ -232,6 +288,7 @@ def main_ui():
                 link_src = row['Link dữ liệu lấy dữ liệu']
                 link_dst = row['Link dữ liệu đích']
                 new_status_parts = []
+                
                 if link_src and "docs.google.com" in str(link_src):
                     ok, msg = verify_access_fast(link_src, creds)
                     if not ok: new_status_parts.append(f"Nguồn: {msg}")
@@ -255,12 +312,12 @@ def main_ui():
         st.error(f"⚠️ Có {len(error_rows)} dòng chưa cấp quyền!")
         c1, c2 = st.columns([3, 1])
         with c1:
-            st.markdown(f"**👉 COPY Email Robot này và Share quyền Editor:**")
+            st.markdown(f"**👉 COPY Email Robot:**")
             st.code(BOT_EMAIL_DISPLAY, language="text")
         with c2:
-            st.warning("Share xong nhớ sửa nhẹ 1 ký tự trong bảng để check lại.")
+            st.warning("Share xong nhớ sửa nhẹ bảng để check lại.")
 
-    # BUTTONS
+    # 4. BUTTONS
     st.divider()
     col_run, col_save = st.columns([4, 1])
     
@@ -268,16 +325,17 @@ def main_ui():
         if st.button("▶️ TỔNG HỢP & GHI DATA", type="primary"):
             selected_rows = edited_df[edited_df["Hành động"] == True].to_dict('records')
             
-            with st.spinner(f"💾 Đang lưu bản mới nhất vào '{SHEET_CONFIG_NAME}'..."):
+            with st.spinner("💾 Đang lưu cấu hình cá nhân..."):
                 creds = get_creds()
-                save_history_config(edited_df, creds)
+                # Lưu kèm User ID
+                save_history_config(edited_df, creds, user_id)
             
             has_error = any("Thiếu quyền" in str(row.get('Trạng thái', '')) for row in selected_rows)
             if has_error:
                 st.error("❌ Cấp quyền trước khi chạy!")
                 st.stop()
             if not selected_rows:
-                st.warning("⚠️ Chọn ít nhất 1 dòng để chạy.")
+                st.warning("⚠️ Chọn ít nhất 1 dòng.")
             else:
                 target_link = selected_rows[0]['Link dữ liệu đích']
                 if not target_link:
@@ -306,7 +364,7 @@ def main_ui():
     with col_save:
         if st.button("💾 Lưu Cấu Hình"):
             creds = get_creds()
-            save_history_config(edited_df, creds)
+            save_history_config(edited_df, creds, user_id)
 
 if __name__ == "__main__":
     if check_login():
