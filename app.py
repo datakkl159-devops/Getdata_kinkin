@@ -94,7 +94,6 @@ def load_history_config(creds, current_user_id):
         df_user = df_all[df_all['User_ID'] == current_user_id].copy()
         if 'User_ID' in df_user.columns: df_user = df_user.drop(columns=['User_ID'])
         
-        # --- FIX TYPE ---
         if 'Ngày chốt' in df_user.columns:
             df_user['Ngày chốt'] = pd.to_datetime(df_user['Ngày chốt'], errors='coerce').dt.date
         if 'Trạng thái' in df_user.columns:
@@ -102,12 +101,8 @@ def load_history_config(creds, current_user_id):
         if 'Hành động' in df_user.columns:
             df_user['Hành động'] = df_user['Hành động'].fillna("")
             
-        # --- TẠO SỐ THỨ TỰ (STT) ---
-        # Bỏ cột STT cũ (nếu có) để tạo mới cho chuẩn
-        if 'STT' in df_user.columns:
-            df_user = df_user.drop(columns=['STT'])
-        
-        # Chèn cột STT vào vị trí đầu tiên (Index 0)
+        # Tự động đánh số STT
+        if 'STT' in df_user.columns: df_user = df_user.drop(columns=['STT'])
         df_user.insert(0, 'STT', range(1, len(df_user) + 1))
 
         return df_user
@@ -128,19 +123,14 @@ def save_history_config(df_ui, creds, current_user_id):
         df_new = df_ui.copy()
         df_new['User_ID'] = current_user_id
         
-        # Cập nhật hành động
         for idx, row in df_new.iterrows():
             if row['Trạng thái'] == "Đã chốt":
                 df_new.at[idx, 'Hành động'] = "Đã cập nhật"
             else:
                 df_new.at[idx, 'Hành động'] = "Xóa & Cập nhật"
 
-        # Date to String
         if 'Ngày chốt' in df_new.columns:
             df_new['Ngày chốt'] = df_new['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
-
-        # Nếu có cột STT thì xóa đi trước khi lưu (để lần sau load lên tự sinh lại cho chuẩn), hoặc lưu luôn cũng được.
-        # Ở đây ta lưu luôn để nhìn trong Sheet cho đẹp.
 
         final_df = df_new
         if not df_all.empty and 'User_ID' in df_all.columns:
@@ -195,8 +185,6 @@ def fetch_single_csv_with_id(row_config, token):
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code == 200:
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
-            
-            # Cố định tên cột là "Tháng Chốt"
             df = df.with_columns([
                 pl.lit(sheet_id).alias("System_Source_ID"), 
                 pl.lit(display_label).alias("Tên_Nguồn"),
@@ -243,7 +231,7 @@ def smart_update_and_sort_all(df_new_updates, target_link, creds, ids_to_remove)
         else:
             df_final = df_keep
 
-        # Sắp xếp
+        # Sort
         if "Tháng Chốt" in df_final.columns:
             try:
                 df_final = df_final.with_columns(
@@ -255,7 +243,7 @@ def smart_update_and_sort_all(df_new_updates, target_link, creds, ids_to_remove)
             except:
                 df_final = df_final.sort("Tháng Chốt")
 
-        # GHI TỪ DÒNG 2 (Giữ header cũ)
+        # GHI TỪ DÒNG 2
         pdf = df_final.to_pandas().fillna('')
         data_values = pdf.values.tolist()
         
@@ -347,24 +335,22 @@ def main_ui():
         with st.spinner("⏳ Tải cấu hình..."):
             df = load_history_config(creds, user_id)
         
-        # Thêm STT vào danh sách cột
         col_order = ["STT", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu", "Tên nguồn (Nhãn)", "Trạng thái", "Hành động"]
         st.session_state['scan_errors'] = []
 
         if df is not None and not df.empty:
             for col in col_order:
-                if col not in df.columns: 
-                    df[col] = "Chưa chốt" if col == "Trạng thái" else ""
+                if col not in df.columns: df[col] = "Chưa chốt" if col == "Trạng thái" else ""
             st.session_state['df_config'] = df[col_order]
         else:
             data = {c: [] for c in col_order}
-            data["STT"] = [1] # Dòng mẫu có STT 1
+            data["STT"] = [1]
             data["Ngày chốt"] = [datetime.now().date()]
             data["Trạng thái"] = ["Chưa chốt"]
             data["Hành động"] = ["Xóa & Cập nhật"]
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info("💡 **Logic:** Chỉ xử lý 'Chưa chốt'. Tự động đánh số thứ tự.")
+    st.info("💡 **Logic:** Xử lý 'Chưa chốt'. Tự động đánh số STT.")
 
     if 'scan_errors' in st.session_state and st.session_state['scan_errors']:
         st.error(f"⚠️ Có {len(st.session_state['scan_errors'])} link lỗi!")
@@ -379,7 +365,7 @@ def main_ui():
         st.session_state['df_config'],
         num_rows="dynamic",
         column_config={
-            "STT": st.column_config.NumberColumn("STT", disabled=True, width="small"), # Cấu hình STT
+            "STT": st.column_config.NumberColumn("STT", disabled=True, width="small"),
             "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"),
             "Trạng thái": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt", "Đã chốt"], required=True, width="small"),
             "Hành động": st.column_config.TextColumn("Hành động", disabled=True),
@@ -387,13 +373,13 @@ def main_ui():
             "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"),
         },
         use_container_width=True,
-        key="editor"
+        key="editor",
+        hide_index=True  # <--- ẨN CỘT INDEX MẶC ĐỊNH
     )
 
     if not edited_df.equals(st.session_state['df_config']):
-        # --- LOGIC TỰ ĐỘNG ĐÁNH SỐ THỨ TỰ (QUAN TRỌNG) ---
+        # Auto gen STT
         edited_df['STT'] = range(1, len(edited_df) + 1)
-        # -------------------------------------------------
 
         for idx, row in edited_df.iterrows():
             if row['Trạng thái'] == "Chưa chốt": edited_df.at[idx, 'Hành động'] = "Xóa & Cập nhật"
