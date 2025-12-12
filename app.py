@@ -24,8 +24,11 @@ AUTHORIZED_USERS = {
 BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
 SHEET_LOG_NAME = "log_lanthucthi"
-# Tên cột chuẩn duy nhất
-COL_NAME_MONTH_FIXED = "Tháng Chốt" 
+
+# --- TÊN 3 CỘT CỐ ĐỊNH (SẼ NẰM Ở CUỐI BẢNG) ---
+COL_LINK_SRC = "Link file nguồn"
+COL_SHEET_SRC = "Sheet nguồn"
+COL_MONTH_FIX = "Tháng chốt"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
@@ -176,7 +179,7 @@ def manual_scan(df):
 
 def fetch_single_csv_with_id(row_config, token):
     link_src = row_config.get('Link dữ liệu lấy dữ liệu', '')
-    display_label = row_config.get('Tên nguồn (Nhãn)', '')
+    sheet_name = row_config.get('Tên sheet dữ liệu', '')
     month_val = str(row_config.get('Tháng', ''))
     
     sheet_id = extract_id(link_src)
@@ -189,12 +192,15 @@ def fetch_single_csv_with_id(row_config, token):
         if response.status_code == 200:
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
             
-            # --- ÉP KIỂU STRING ĐỂ TRÁNH LỖI GỘP CỘT ---
+            # --- TẠO 3 CỘT CỐ ĐỊNH (Chuẩn bị cho bước Gộp) ---
             df = df.with_columns([
+                # System ID để dùng cho logic xóa (Ẩn danh)
                 pl.lit(sheet_id).alias("System_Source_ID"), 
-                pl.lit(display_label).alias("Tên_Nguồn"),
-                # Force ép kiểu String cho cột Tháng Chốt
-                pl.lit(month_val).cast(pl.Utf8).alias(COL_NAME_MONTH_FIXED)
+                
+                # 3 Cột hiển thị theo yêu cầu
+                pl.lit(link_src).cast(pl.Utf8).alias(COL_LINK_SRC),
+                pl.lit(sheet_name).cast(pl.Utf8).alias(COL_SHEET_SRC),
+                pl.lit(month_val).cast(pl.Utf8).alias(COL_MONTH_FIX)
             ])
             return df, sheet_id, "Thành công"
         return None, sheet_id, "Lỗi HTTP"
@@ -221,26 +227,22 @@ def smart_update_and_sort_all(df_new_updates, target_link, creds, ids_to_remove)
         try:
             r = requests.get(export_url, headers=headers)
             if r.status_code == 200:
-                # Đọc tất cả là String để tránh xung đột
                 df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
                 
-                # --- CHUẨN HÓA TÊN CỘT CŨ ---
+                # --- CHUẨN HÓA TÊN CỘT CŨ (Fix lỗi nhảy cột) ---
                 rename_map = {}
                 for col in df_current.columns:
-                    c_clean = col.strip()
-                    if c_clean in ["System_Month_Sort", "Tháng", "tháng", "Tháng Chốt"]:
-                        rename_map[col] = COL_NAME_MONTH_FIXED
+                    c = col.strip()
+                    # Map các tên cũ về tên chuẩn
+                    if c in ["Link Nguồn", "Link URL nguồn", "Link"]: rename_map[col] = COL_LINK_SRC
+                    if c in ["Tên sheet nguồn", "Sheet Name"]: rename_map[col] = COL_SHEET_SRC
+                    if c in ["Tháng", "Tháng Chốt", "System_Month_Sort"]: rename_map[col] = COL_MONTH_FIX
                 
                 if rename_map:
                     df_current = df_current.rename(rename_map)
-                
-                # --- CHUẨN HÓA KIỂU DỮ LIỆU CỘT THÁNG ---
-                if COL_NAME_MONTH_FIXED in df_current.columns:
-                    df_current = df_current.with_columns(
-                        pl.col(COL_NAME_MONTH_FIXED).cast(pl.Utf8)
-                    )
         except: pass
 
+        # Filter Old Data
         if not df_current.is_empty():
             if "System_Source_ID" in df_current.columns:
                 df_keep = df_current.filter(~pl.col("System_Source_ID").is_in(ids_to_remove))
@@ -249,25 +251,39 @@ def smart_update_and_sort_all(df_new_updates, target_link, creds, ids_to_remove)
         else:
             df_keep = pl.DataFrame()
 
-        # --- GỘP (Lúc này 2 bên đều có cột "Tháng Chốt" là String -> Sẽ gộp làm 1) ---
+        # Merge
         if not df_new_updates.is_empty():
             df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
         else:
             df_final = df_keep
 
-        # Sắp xếp
-        if COL_NAME_MONTH_FIXED in df_final.columns:
+        # --- SẮP XẾP CỘT (REORDER COLUMNS) ---
+        # Đưa 3 cột Link, Sheet, Tháng về cuối cùng
+        all_cols = df_final.columns
+        # Các cột không phải 3 cột metadata và không phải System ID
+        data_cols = [c for c in all_cols if c not in [COL_LINK_SRC, COL_SHEET_SRC, COL_MONTH_FIX, "System_Source_ID"]]
+        
+        # Thứ tự mong muốn: [Data...] + [Link] + [Sheet] + [Tháng] + [System_ID]
+        # System_ID cần giữ lại để lần sau xóa cho đúng
+        desired_order = data_cols + [COL_LINK_SRC, COL_SHEET_SRC, COL_MONTH_FIX, "System_Source_ID"]
+        
+        # Chỉ select những cột có thật trong dataframe
+        final_cols = [c for c in desired_order if c in df_final.columns]
+        df_final = df_final.select(final_cols)
+
+        # Sort Rows by Month
+        if COL_MONTH_FIX in df_final.columns:
             try:
                 df_final = df_final.with_columns(
-                    pl.col(COL_NAME_MONTH_FIXED)
+                    pl.col(COL_MONTH_FIX)
                     .str.strptime(pl.Date, "%m/%Y", strict=False)
-                    .alias("temp_date_sort")
+                    .alias("temp_sort")
                 )
-                df_final = df_final.sort("temp_date_sort", descending=False).drop("temp_date_sort")
+                df_final = df_final.sort("temp_sort", descending=False).drop("temp_sort")
             except:
-                df_final = df_final.sort(COL_NAME_MONTH_FIXED)
+                df_final = df_final.sort(COL_MONTH_FIX)
 
-        # GHI TỪ DÒNG 2
+        # Write
         pdf = df_final.to_pandas().fillna('')
         data_values = pdf.values.tolist()
         
@@ -293,7 +309,6 @@ def process_pipeline_smart(rows_to_process, user_id):
     
     tz_vn = pytz.timezone('Asia/Ho_Chi_Minh')
     timestamp_vn = datetime.now(tz_vn).strftime("%d/%m/%Y %H:%M:%S")
-    
     target_link = rows_to_process[0]['Link dữ liệu đích']
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
@@ -314,6 +329,10 @@ def process_pipeline_smart(rows_to_process, user_id):
             
             results_map[idx] = df
             
+            # Lưu ID để xóa
+            if df is not None:
+                ids_processing.append(sheet_id)
+
             d_log = row.get('Ngày chốt', '')
             log_date = d_log.strftime("%d/%m/%Y") if isinstance(d_log, (datetime, pd.Timestamp)) else str(d_log)
             
@@ -323,11 +342,8 @@ def process_pipeline_smart(rows_to_process, user_id):
                 row.get('Tên sheet dữ liệu', ''), label, status, ""
             ]
             
-            if df is not None and sheet_id:
-                ids_processing.append(sheet_id)
-                log_row[-1] = f"Tải {df.height} dòng"
-            else:
-                log_row[-2], log_row[-1] = "Thất bại", "Lỗi tải"
+            if df is not None: log_row[-1] = f"Tải {df.height} dòng"
+            else: log_row[-2], log_row[-1] = "Thất bại", "Lỗi tải"
             log_entries.append(log_row)
 
     sorted_dfs = []
@@ -374,7 +390,7 @@ def main_ui():
             data["Hành động"] = ["Xóa & Cập nhật"]
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info("💡 **Logic:** Chỉ xử lý 'Chưa chốt'. Tự động đánh số thứ tự.")
+    st.info("💡 **Logic:** Chỉ xử lý 'Chưa chốt'. 3 Cột Link/Sheet/Tháng sẽ nằm cuối cùng.")
 
     if 'scan_errors' in st.session_state and st.session_state['scan_errors']:
         st.error(f"⚠️ Có {len(st.session_state['scan_errors'])} link lỗi!")
