@@ -24,6 +24,8 @@ AUTHORIZED_USERS = {
 BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
 SHEET_LOG_NAME = "log_lanthucthi"
+# Tên cột chuẩn duy nhất
+COL_NAME_MONTH_FIXED = "Tháng Chốt" 
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
@@ -94,7 +96,6 @@ def load_history_config(creds, current_user_id):
         df_user = df_all[df_all['User_ID'] == current_user_id].copy()
         if 'User_ID' in df_user.columns: df_user = df_user.drop(columns=['User_ID'])
         
-        # Fix Type
         if 'Ngày chốt' in df_user.columns:
             df_user['Ngày chốt'] = pd.to_datetime(df_user['Ngày chốt'], errors='coerce').dt.date
         if 'Trạng thái' in df_user.columns:
@@ -102,6 +103,9 @@ def load_history_config(creds, current_user_id):
         if 'Hành động' in df_user.columns:
             df_user['Hành động'] = df_user['Hành động'].fillna("")
             
+        if 'STT' in df_user.columns: df_user = df_user.drop(columns=['STT'])
+        df_user.insert(0, 'STT', range(1, len(df_user) + 1))
+
         return df_user
     except: return None
 
@@ -120,20 +124,16 @@ def save_history_config(df_ui, creds, current_user_id):
         df_new = df_ui.copy()
         df_new['User_ID'] = current_user_id
         
-        # Cập nhật hành động
         for idx, row in df_new.iterrows():
             if row['Trạng thái'] == "Đã chốt":
                 df_new.at[idx, 'Hành động'] = "Đã cập nhật"
             else:
                 df_new.at[idx, 'Hành động'] = "Xóa & Cập nhật"
 
-        # Date to String
         if 'Ngày chốt' in df_new.columns:
             df_new['Ngày chốt'] = df_new['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
 
-        # Xóa cột STT trước khi lưu (để khi load lại tự đánh lại cho chuẩn)
-        if 'STT' in df_new.columns:
-            df_new = df_new.drop(columns=['STT'])
+        if 'STT' in df_new.columns: df_new = df_new.drop(columns=['STT'])
 
         final_df = df_new
         if not df_all.empty and 'User_ID' in df_all.columns:
@@ -188,10 +188,13 @@ def fetch_single_csv_with_id(row_config, token):
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code == 200:
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
+            
+            # --- ÉP KIỂU STRING ĐỂ TRÁNH LỖI GỘP CỘT ---
             df = df.with_columns([
                 pl.lit(sheet_id).alias("System_Source_ID"), 
                 pl.lit(display_label).alias("Tên_Nguồn"),
-                pl.lit(month_val).alias("Tháng Chốt") 
+                # Force ép kiểu String cho cột Tháng Chốt
+                pl.lit(month_val).cast(pl.Utf8).alias(COL_NAME_MONTH_FIXED)
             ])
             return df, sheet_id, "Thành công"
         return None, sheet_id, "Lỗi HTTP"
@@ -218,7 +221,24 @@ def smart_update_and_sort_all(df_new_updates, target_link, creds, ids_to_remove)
         try:
             r = requests.get(export_url, headers=headers)
             if r.status_code == 200:
+                # Đọc tất cả là String để tránh xung đột
                 df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
+                
+                # --- CHUẨN HÓA TÊN CỘT CŨ ---
+                rename_map = {}
+                for col in df_current.columns:
+                    c_clean = col.strip()
+                    if c_clean in ["System_Month_Sort", "Tháng", "tháng", "Tháng Chốt"]:
+                        rename_map[col] = COL_NAME_MONTH_FIXED
+                
+                if rename_map:
+                    df_current = df_current.rename(rename_map)
+                
+                # --- CHUẨN HÓA KIỂU DỮ LIỆU CỘT THÁNG ---
+                if COL_NAME_MONTH_FIXED in df_current.columns:
+                    df_current = df_current.with_columns(
+                        pl.col(COL_NAME_MONTH_FIXED).cast(pl.Utf8)
+                    )
         except: pass
 
         if not df_current.is_empty():
@@ -229,22 +249,23 @@ def smart_update_and_sort_all(df_new_updates, target_link, creds, ids_to_remove)
         else:
             df_keep = pl.DataFrame()
 
+        # --- GỘP (Lúc này 2 bên đều có cột "Tháng Chốt" là String -> Sẽ gộp làm 1) ---
         if not df_new_updates.is_empty():
             df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
         else:
             df_final = df_keep
 
-        # Sort Logic
-        if "Tháng Chốt" in df_final.columns:
+        # Sắp xếp
+        if COL_NAME_MONTH_FIXED in df_final.columns:
             try:
                 df_final = df_final.with_columns(
-                    pl.col("Tháng Chốt")
+                    pl.col(COL_NAME_MONTH_FIXED)
                     .str.strptime(pl.Date, "%m/%Y", strict=False)
                     .alias("temp_date_sort")
                 )
                 df_final = df_final.sort("temp_date_sort", descending=False).drop("temp_date_sort")
             except:
-                df_final = df_final.sort("Tháng Chốt")
+                df_final = df_final.sort(COL_NAME_MONTH_FIXED)
 
         # GHI TỪ DÒNG 2
         pdf = df_final.to_pandas().fillna('')
@@ -306,8 +327,7 @@ def process_pipeline_smart(rows_to_process, user_id):
                 ids_processing.append(sheet_id)
                 log_row[-1] = f"Tải {df.height} dòng"
             else:
-                log_row[-2] = "Thất bại"
-                log_row[-1] = "Lỗi tải"
+                log_row[-2], log_row[-1] = "Thất bại", "Lỗi tải"
             log_entries.append(log_row)
 
     sorted_dfs = []
@@ -354,7 +374,7 @@ def main_ui():
             data["Hành động"] = ["Xóa & Cập nhật"]
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info("💡 **Logic:** Tự động đánh STT. Cột Index mặc định đã được ẩn.")
+    st.info("💡 **Logic:** Chỉ xử lý 'Chưa chốt'. Tự động đánh số thứ tự.")
 
     if 'scan_errors' in st.session_state and st.session_state['scan_errors']:
         st.error(f"⚠️ Có {len(st.session_state['scan_errors'])} link lỗi!")
@@ -365,7 +385,6 @@ def main_ui():
             st.code(BOT_EMAIL_DISPLAY, language="text")
         st.divider()
 
-    # --- KHU VỰC EDITOR ---
     edited_df = st.data_editor(
         st.session_state['df_config'],
         num_rows="dynamic",
@@ -379,22 +398,17 @@ def main_ui():
         },
         use_container_width=True,
         key="editor",
-        hide_index=True # <--- ĐÃ ẨN CỘT KHOANH ĐỎ
+        hide_index=True 
     )
 
-    # --- LOGIC TỰ ĐỘNG CẬP NHẬT KHI CÓ THAY ĐỔI ---
     if not edited_df.equals(st.session_state['df_config']):
-        
-        # 1. Tự động đánh số thứ tự lại từ đầu (Quan trọng)
         edited_df = edited_df.reset_index(drop=True)
         edited_df['STT'] = range(1, len(edited_df) + 1)
-        
-        # 2. Cập nhật trạng thái hành động
+
         for idx, row in edited_df.iterrows():
             if row['Trạng thái'] == "Chưa chốt": edited_df.at[idx, 'Hành động'] = "Xóa & Cập nhật"
             elif row['Trạng thái'] == "Đã chốt": edited_df.at[idx, 'Hành động'] = "Đã cập nhật"
         
-        # 3. Quét lỗi link
         creds = get_creds()
         scan_errors = []
         for idx, row in edited_df.iterrows():
@@ -411,7 +425,6 @@ def main_ui():
         st.session_state['df_config'] = edited_df
         st.rerun()
 
-    # BUTTONS
     st.divider()
     col_run, col_scan, col_save = st.columns([3, 1, 1])
     
