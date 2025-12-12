@@ -6,11 +6,11 @@ import io
 import concurrent.futures
 import time
 import gspread
-import pytz # Thư viện xử lý múi giờ
 from gspread_dataframe import get_as_dataframe
 from datetime import datetime
 from google.oauth2 import service_account
 import google.auth.transport.requests
+import pytz
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 st.set_page_config(page_title="Tool Quản Lý Data", layout="wide")
@@ -170,6 +170,9 @@ def manual_scan(df):
 def fetch_single_csv_with_id(row_config, token):
     link_src = row_config.get('Link dữ liệu lấy dữ liệu', '')
     display_label = row_config.get('Tên nguồn (Nhãn)', '')
+    # Lấy thông tin tháng
+    month_val = str(row_config.get('Tháng', ''))
+    
     sheet_id = extract_id(link_src)
     if not sheet_id: return None, sheet_id, "Link lỗi"
 
@@ -179,9 +182,15 @@ def fetch_single_csv_with_id(row_config, token):
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code == 200:
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
+            
+            # --- FIX QUAN TRỌNG: CỐ ĐỊNH TÊN CỘT "Tháng Chốt" ---
+            # Bất kể giá trị month_val là gì, tên cột luôn là "Tháng Chốt"
+            # Để khi concat nó sẽ gộp chung vào 1 cột
+            
             df = df.with_columns([
                 pl.lit(sheet_id).alias("System_Source_ID"), 
-                pl.lit(display_label).alias("Tên_Nguồn")
+                pl.lit(display_label).alias("Tên_Nguồn"),
+                pl.lit(month_val).alias("Tháng Chốt") # <--- Tên Cột Cố Định
             ])
             return df, sheet_id, "Thành công"
         return None, sheet_id, "Lỗi HTTP"
@@ -219,23 +228,27 @@ def smart_update_and_sort_all(df_new_updates, target_link, creds, ids_to_remove)
         else:
             df_keep = pl.DataFrame()
 
+        # Gộp dữ liệu (Lúc này cả df_keep và df_new_updates đều có cột "Tháng Chốt")
+        # Polars sẽ tự động stack chúng vào nhau
         if not df_new_updates.is_empty():
             df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
         else:
             df_final = df_keep
 
-        # Sort Logic (Optional)
-        if "System_Month_Sort" in df_final.columns:
+        # SẮP XẾP THEO CỘT "Tháng Chốt"
+        if "Tháng Chốt" in df_final.columns:
             try:
                 df_final = df_final.with_columns(
-                    pl.col("System_Month_Sort")
+                    pl.col("Tháng Chốt")
                     .str.strptime(pl.Date, "%m/%Y", strict=False)
                     .alias("temp_date_sort")
                 )
                 df_final = df_final.sort("temp_date_sort", descending=False).drop("temp_date_sort")
-            except: pass
+            except:
+                # Fallback nếu format lỗi
+                df_final = df_final.sort("Tháng Chốt")
 
-        # WRITE FROM A2
+        # GHI TỪ DÒNG 2
         pdf = df_final.to_pandas().fillna('')
         data_values = pdf.values.tolist()
         
@@ -245,7 +258,7 @@ def smart_update_and_sort_all(df_new_updates, target_link, creds, ids_to_remove)
         else:
             wks.batch_clear([f"A2:ZZ{wks.row_count}"])
 
-        return True, f"Đã cập nhật (Giữ tiêu đề). Tổng: {len(pdf)} dòng."
+        return True, f"Cập nhật xong (Gộp cột Tháng Chốt). Tổng: {len(pdf)} dòng."
 
     except Exception as e: return False, str(e)
 
@@ -258,11 +271,11 @@ def process_pipeline_smart(rows_to_process, user_id):
     results_map = {}
     ids_processing = []
     log_entries = []
-    target_link = rows_to_process[0]['Link dữ liệu đích']
     
-    # --- FIX TIMEZONE VIỆT NAM ---
     tz_vn = pytz.timezone('Asia/Ho_Chi_Minh')
     timestamp_vn = datetime.now(tz_vn).strftime("%d/%m/%Y %H:%M:%S")
+    
+    target_link = rows_to_process[0]['Link dữ liệu đích']
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         future_to_index = {
@@ -274,35 +287,35 @@ def process_pipeline_smart(rows_to_process, user_id):
             idx = future_to_index[future]
             row = rows_to_process[idx]
             label = row.get('Tên nguồn (Nhãn)', 'Unknown')
-            month_val = str(row.get('Tháng', ''))
             
             try:
                 df, sheet_id, status = future.result()
             except Exception as e:
                 df, sheet_id, status = None, None, str(e)
             
-            if df is not None:
-                df = df.with_columns(pl.lit(month_val).alias("System_Month_Sort"))
-                results_map[idx] = df
-                ids_processing.append(sheet_id)
+            results_map[idx] = df
             
             d_log = row.get('Ngày chốt', '')
             log_date = d_log.strftime("%d/%m/%Y") if isinstance(d_log, (datetime, pd.Timestamp)) else str(d_log)
             
-            # Dùng Time VN cho từng dòng log
             log_row = [
                 timestamp_vn, log_date, str(row.get('Tháng', '')),
                 user_id, row.get('Link dữ liệu lấy dữ liệu', ''), target_link,
                 row.get('Tên sheet dữ liệu', ''), label, status, ""
             ]
             
-            if df is not None: log_row[-1] = f"Tải {df.height} dòng"
-            else: log_row[-2], log_row[-1] = "Thất bại", "Lỗi tải"
+            if df is not None and sheet_id:
+                ids_processing.append(sheet_id)
+                log_row[-1] = f"Tải {df.height} dòng"
+            else:
+                log_row[-2] = "Thất bại"
+                log_row[-1] = "Lỗi tải"
             log_entries.append(log_row)
 
     sorted_dfs = []
     for i in range(len(rows_to_process)):
-        if i in results_map: sorted_dfs.append(results_map[i])
+        if i in results_map and results_map[i] is not None:
+            sorted_dfs.append(results_map[i])
 
     success = False
     final_msg = ""
@@ -342,7 +355,7 @@ def main_ui():
             data["Hành động"] = ["Xóa & Cập nhật"]
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info("💡 **Logic:** Xử lý 'Chưa chốt'. Dữ liệu cũ bị xóa, **dữ liệu mới ghi từ dòng 2 (giữ tiêu đề)**.")
+    st.info("💡 **Logic:** Chỉ xử lý 'Chưa chốt'. Tự động gộp dữ liệu vào cột **Tháng Chốt**.")
 
     if 'scan_errors' in st.session_state and st.session_state['scan_errors']:
         st.error(f"⚠️ Có {len(st.session_state['scan_errors'])} link lỗi!")
@@ -416,7 +429,7 @@ def main_ui():
 
                     rows_to_run.sort(key=parse_month_ui)
 
-                    with st.status("🚀 Đang xử lý theo thứ tự Tháng...", expanded=True) as status:
+                    with st.status("🚀 Đang xử lý...", expanded=True) as status:
                         st.write(f"Đang chạy {len(rows_to_run)} nguồn...")
                         for idx, row in edited_df.iterrows():
                             if row['Trạng thái'] == "Chưa chốt": edited_df.at[idx, 'Hành động'] = "🔄 Đang chạy..."
