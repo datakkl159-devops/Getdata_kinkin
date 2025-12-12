@@ -144,7 +144,7 @@ def main_ui():
         st.session_state['df_config'] = pd.DataFrame(data)
 
     # --- CẬP NHẬT CÂU THÔNG BÁO Ở ĐÂY ---
-    st.info(f"💡 Nhập Link vào bảng ➡ Hệ thống tự động kiểm tra. Nếu báo **'⛔ Thiếu quyền'**, hãy **COPY Email Robot bên dưới** và Share quyền Editor cho nó.")
+    st.info(f"💡 Nhập Link vào bảng ➡ Hệ thống tự động kiểm tra. Nếu báo **'⛔ Thiếu quyền'**, hãy **COPY Email Robot "getdulieu@kin-kin-477902.iam.gserviceaccount.com"** và Share quyền Editor cho nó.")
 
     # Data Editor
     edited_df = st.data_editor(
@@ -239,3 +239,4 @@ def main_ui():
 if __name__ == "__main__":
     if check_login():
         main_ui()
+
