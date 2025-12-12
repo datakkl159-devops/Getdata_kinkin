@@ -12,19 +12,18 @@ from google.oauth2 import service_account
 import google.auth.transport.requests
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Tool Xử Lý Data (Log System)", layout="wide")
+st.set_page_config(page_title="Tool Xử Lý Data (Log Chi Tiết)", layout="wide")
 
-# --- DANH SÁCH TÀI KHOẢN ---
 AUTHORIZED_USERS = {
     "admin2024": "Admin_Master",
     "team_hn_1": "Team_HaNoi",
     "team_hcm_1": "Team_HCM",
-    "auto_bot_key": "hẹn giờ tự động" # Key dự phòng cho automation sau này
+    "auto_bot": "Hẹn giờ tự động"
 }
 
 BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
-SHEET_LOG_NAME = "log_lanthucthi" # Tên tab lưu log
+SHEET_LOG_NAME = "log_lanthucthi"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
@@ -34,10 +33,8 @@ def check_login():
         st.session_state['logged_in'] = False
         st.session_state['current_user_id'] = None
         
-    # Hỗ trợ login qua URL params (cho automation sau này nếu cần)
-    query_params = st.query_params
-    if "auto_key" in query_params:
-        key = query_params["auto_key"]
+    if "auto_key" in st.query_params:
+        key = st.query_params["auto_key"]
         if key in AUTHORIZED_USERS:
             st.session_state['logged_in'] = True
             st.session_state['current_user_id'] = AUTHORIZED_USERS[key]
@@ -49,10 +46,7 @@ def check_login():
         if st.button("Đăng Nhập"):
             if pwd in AUTHORIZED_USERS:
                 st.session_state['logged_in'] = True
-                user_id = AUTHORIZED_USERS[pwd]
-                st.session_state['current_user_id'] = user_id
-                st.toast(f"Xin chào: {user_id}", icon="👋")
-                time.sleep(1)
+                st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]
                 st.rerun()
             else: st.error("Mật khẩu không đúng!")
         return False
@@ -70,38 +64,42 @@ def extract_id(url):
         except: return None
     return None
 
-# --- 3. HỆ THỐNG LOGGING (MỚI) ---
-def log_execution(creds, user_id, action_type, status, details=""):
+# --- 3. HỆ THỐNG LOGGING (CẬP NHẬT 10 CỘT) ---
+def log_batch_to_sheet(creds, log_rows):
     """
-    Ghi lại lịch sử chạy vào sheet 'log_lanthucthi'
+    Ghi log với đúng 10 cột yêu cầu.
     """
     history_id = st.secrets["gcp_service_account"].get("history_sheet_id")
-    if not history_id: return
+    if not history_id or not log_rows: return
 
     try:
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(history_id)
         
-        # Tìm hoặc tạo tab log
         try:
             wks = sh.worksheet(SHEET_LOG_NAME)
         except gspread.WorksheetNotFound:
             wks = sh.add_worksheet(title=SHEET_LOG_NAME, rows=1000, cols=10)
-            # Tạo header nếu mới tạo
-            wks.append_row(["Thời gian", "Người thực hiện", "Hành động", "Trạng thái", "Chi tiết"])
+            # HEADER CHUẨN 10 CỘT
+            wks.append_row([
+                "Thời gian chạy lấy dữ liệu", 
+                "Ngày chốt", 
+                "Tháng", 
+                "Người thực hiện", 
+                "Link Nguồn", 
+                "Link Đích", 
+                "Tên sheet dữ liệu", 
+                "Tên nguồn(nhãn)", 
+                "Trạng thái", 
+                "Chi tiết lỗi"
+            ])
             
-        # Chuẩn bị dữ liệu log
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_row = [timestamp, user_id, action_type, status, details]
-        
-        # Ghi nối tiếp vào cuối sheet (append)
-        wks.append_row(log_row)
+        wks.append_rows(log_rows)
         
     except Exception as e:
-        print(f"Lỗi ghi log: {e}") 
-        # Không show lỗi log ra UI để tránh làm phiền user, chỉ in ra console
+        print(f"Lỗi ghi log: {e}")
 
-# --- 4. QUẢN LÝ LỊCH SỬ CẤU HÌNH ---
+# --- 4. QUẢN LÝ LỊCH SỬ ---
 def load_history_config(creds, current_user_id):
     history_id = st.secrets["gcp_service_account"].get("history_sheet_id")
     if not history_id: return None
@@ -123,7 +121,6 @@ def load_history_config(creds, current_user_id):
             
         if 'User_ID' in df_user.columns:
             df_user = df_user.drop(columns=['User_ID'])
-            
         return df_user
     except: return None
 
@@ -161,9 +158,9 @@ def save_history_config(df_current_ui, creds, current_user_id):
         wks.update(data_to_write)
         st.toast(f"✅ Đã lưu cấu hình: {current_user_id}", icon="💾")
     except Exception as e:
-        st.error(f"❌ LỖI LƯU: {e}")
+        st.error(f"❌ Lỗi lưu cấu hình: {e}")
 
-# --- 5. CORE ENGINE (COPY 1:1) ---
+# --- 5. CORE ENGINE (XỬ LÝ DỮ LIỆU) ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link sai"
@@ -176,17 +173,19 @@ def verify_access_fast(url, creds):
         return False, "❌ Lỗi khác"
     except: return False, "❌ Lỗi mạng"
 
-def fetch_single_csv_raw(row_config, token):
-    sheet_id = extract_id(row_config['Link dữ liệu lấy dữ liệu'])
+def fetch_single_csv_raw_with_status(row_config, token):
+    link_src = row_config['Link dữ liệu lấy dữ liệu']
+    sheet_id = extract_id(link_src)
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
     headers = {'Authorization': f'Bearer {token}'}
     try:
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code == 200:
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
-            return df
-        return None
-    except: return None
+            return df, "Thành công", f"Tải {df.height} dòng"
+        return None, "Thất bại", f"Lỗi HTTP {response.status_code}"
+    except Exception as e:
+        return None, "Thất bại", str(e)
 
 def write_to_google_sheet(df, target_link, creds):
     try:
@@ -195,38 +194,104 @@ def write_to_google_sheet(df, target_link, creds):
         sh = gc.open_by_key(target_id)
         try: wks = sh.worksheet("Tong_Hop_Data")
         except: wks = sh.get_worksheet(0) 
-        
         wks.clear()
         pdf = df.to_pandas().fillna('')
         data_to_write = [pdf.columns.tolist()] + pdf.values.tolist()
         wks.update(data_to_write)
-        return True, f"Đã ghi {len(data_to_write)} dòng vào: {sh.title}"
+        return True, f"Ghi {len(data_to_write)} dòng"
     except Exception as e: return False, str(e)
 
-def process_pipeline_raw(selected_rows):
+def process_pipeline_and_collect_logs(selected_rows, user_id):
     creds = get_creds()
     auth_req = google.auth.transport.requests.Request() 
     creds.refresh(auth_req)
     token = creds.token
     
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_row = {executor.submit(fetch_single_csv_raw, row, token): row for row in selected_rows}
-        for future in concurrent.futures.as_completed(future_to_row):
-            data = future.result()
-            if data is not None: results.append(data)
+    results_df = []
+    log_entries = []
+    target_link = selected_rows[0]['Link dữ liệu đích']
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    if results:
-        df_big = pl.concat(results, how="vertical", rechunk=True)
-        return df_big
-    return None
+    # 1. TẢI DỮ LIỆU
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # Map future với row config để lấy thông tin log
+        future_to_row = {executor.submit(fetch_single_csv_raw_with_status, row, token): row for row in selected_rows}
+        
+        for future in concurrent.futures.as_completed(future_to_row):
+            row = future_to_row[future] # Lấy thông tin dòng config
+            
+            # Lấy kết quả chạy
+            try:
+                df, status, msg = future.result()
+            except Exception as e:
+                df, status, msg = None, "Lỗi hệ thống", str(e)
+            
+            if df is not None:
+                results_df.append(df)
+            
+            # --- TẠO DÒNG LOG CHUẨN 10 CỘT ---
+            # 1. Thời gian, 2. Ngày chốt, 3. Tháng, 4. Người thực hiện
+            # 5. Link Nguồn, 6. Link Đích, 7. Tên sheet, 8. Tên nguồn, 9. Trạng thái, 10. Chi tiết
+            
+            log_row = [
+                timestamp,
+                str(row.get('Ngày chốt', '')),
+                str(row.get('Tháng', '')),
+                user_id,
+                row.get('Link dữ liệu lấy dữ liệu', ''),
+                target_link,
+                row.get('Tên sheet dữ liệu', ''),
+                row.get('Tên nguồn (Nhãn)', ''),
+                status,
+                msg
+            ]
+            log_entries.append(log_row)
+    
+    # 2. GỘP VÀ GHI
+    final_status = "Thất bại"
+    final_msg = "Không có dữ liệu nguồn"
+    df_big = None
+    
+    if results_df:
+        try:
+            df_big = pl.concat(results_df, how="vertical", rechunk=True)
+            success, write_msg = write_to_google_sheet(df_big, target_link, creds)
+            
+            if success: 
+                final_status = "Hoàn tất"
+                final_msg = write_msg
+            else:
+                final_status = "Lỗi Ghi"
+                final_msg = write_msg
+                
+            # Log dòng tổng hợp (Optional - Nếu muốn ghi nhận bước Ghi Đích)
+            log_entries.append([
+                timestamp, 
+                "---", "---", 
+                user_id, 
+                "TỔNG HỢP CÁC NGUỒN", 
+                target_link, 
+                "Tong_Hop_Data", 
+                "ALL", 
+                "Thành công" if success else "Lỗi Ghi", 
+                final_msg
+            ])
+                
+        except Exception as e:
+            final_status = "Lỗi Gộp"
+            final_msg = str(e)
+            
+    # 3. GHI LOG VÀO SHEET
+    log_batch_to_sheet(creds, log_entries)
+    
+    return df_big, final_status, final_msg
 
 # --- 6. GIAO DIỆN CHÍNH ---
 def main_ui():
     user_id = st.session_state.get('current_user_id', 'Unknown')
     st.title(f"⚙️ Tool Xử Lý Data (User: {user_id})")
     
-    # 1. LOAD
+    # LOAD
     if 'df_config' not in st.session_state:
         creds = get_creds()
         with st.spinner(f"⏳ Đang tải cấu hình..."):
@@ -252,9 +317,9 @@ def main_ui():
             }
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info("💡 Chế độ: **Giữ nguyên bản (Copy 1:1)**. Dữ liệu sẽ được LOG lại khi chạy.")
+    st.info("💡 Chế độ: **Giữ nguyên bản (Copy 1:1)**. Tự động ghi Log chi tiết 10 cột.")
 
-    # 2. EDITOR
+    # EDITOR
     edited_df = st.data_editor(
         st.session_state['df_config'],
         num_rows="dynamic",
@@ -269,7 +334,7 @@ def main_ui():
         key="editor"
     )
 
-    # 3. AUTO CHECK
+    # AUTO CHECK
     if not edited_df.equals(st.session_state['df_config']):
         try:
             creds = get_creds()
@@ -304,7 +369,7 @@ def main_ui():
         with c2:
             st.warning("Share quyền Editor xong nhớ sửa nhẹ bảng.")
 
-    # 4. BUTTONS
+    # BUTTONS
     st.divider()
     col_run, col_save = st.columns([4, 1])
     
@@ -313,18 +378,12 @@ def main_ui():
             selected_rows = edited_df[edited_df["Hành động"] == True].to_dict('records')
             creds = get_creds()
             
-            # --- START LOGGING START ---
-            log_execution(creds, user_id, "Bắt đầu chạy", "Đang xử lý", f"Số nguồn: {len(selected_rows)}")
-            
-            # Save Config
             with st.spinner("💾 Đang lưu cấu hình..."):
                 save_history_config(edited_df, creds, user_id)
             
-            # Validate
             has_error = any("Thiếu quyền" in str(row.get('Trạng thái', '')) for row in selected_rows)
             if has_error:
                 st.error("❌ Cấp quyền trước khi chạy!")
-                log_execution(creds, user_id, "Chạy", "Lỗi", "Thiếu quyền truy cập")
                 st.stop()
             if not selected_rows:
                 st.warning("⚠️ Chọn ít nhất 1 dòng.")
@@ -334,33 +393,21 @@ def main_ui():
                     st.error("❌ Thiếu Link Đích.")
                     st.stop()
 
-                with st.status("🚀 Đang chạy...", expanded=True) as status:
-                    st.write(f"1. Đang tải {len(selected_rows)} nguồn...")
-                    df_result = process_pipeline_raw(selected_rows)
+                with st.status("🚀 Đang chạy và ghi log...", expanded=True) as status:
+                    st.write(f"Đang xử lý {len(selected_rows)} nguồn...")
                     
-                    if df_result is not None:
-                        st.write(f"✅ Tải xong {df_result.height:,} dòng. Đang ghi đè...")
-                        success, msg = write_to_google_sheet(df_result, target_link, creds)
-                        
-                        if success:
-                            status.update(label="Xong!", state="complete", expanded=False)
-                            st.success(f"🎉 {msg}")
-                            st.balloons()
-                            
-                            # --- LOG SUCCESS ---
-                            log_execution(creds, user_id, "Ghi Data", "Thành công", f"Ghi {df_result.height} dòng vào {extract_id(target_link)}")
-                            
-                            buffer = io.BytesIO()
-                            df_result.write_excel(buffer)
-                            st.download_button("📥 Tải Backup .xlsx", buffer.getvalue(), "Backup.xlsx")
-                        else: 
-                            st.error(f"❌ Lỗi ghi: {msg}")
-                            # --- LOG FAIL WRITE ---
-                            log_execution(creds, user_id, "Ghi Data", "Thất bại", msg)
-                    else: 
-                        st.error("❌ Lỗi tải nguồn.")
-                        # --- LOG FAIL READ ---
-                        log_execution(creds, user_id, "Đọc Data", "Thất bại", "Không tải được file nguồn")
+                    df_result, final_status, final_msg = process_pipeline_and_collect_logs(selected_rows, user_id)
+                    
+                    if final_status == "Hoàn tất":
+                        status.update(label="Xong!", state="complete", expanded=False)
+                        st.success(f"🎉 {final_msg}")
+                        st.balloons()
+                        buffer = io.BytesIO()
+                        df_result.write_excel(buffer)
+                        st.download_button("📥 Tải Backup .xlsx", buffer.getvalue(), "Backup.xlsx")
+                    else:
+                        status.update(label="Lỗi!", state="error", expanded=False)
+                        st.error(f"❌ {final_msg}")
                     
     with col_save:
         if st.button("💾 Lưu Cấu Hình"):
