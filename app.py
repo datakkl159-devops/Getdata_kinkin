@@ -38,8 +38,15 @@ def check_login():
     return True
 
 def get_creds():
+    # --- ĐOẠN CODE SỬA LỖI KEY ---
+    creds_info = dict(st.secrets["gcp_service_account"])
+    
+    # Fix lỗi xuống dòng trong Private Key
+    if "private_key" in creds_info:
+        creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+
     return service_account.Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"], scopes=SCOPES
+        creds_info, scopes=SCOPES
     )
 
 def extract_id(url):
@@ -143,8 +150,8 @@ def main_ui():
         }
         st.session_state['df_config'] = pd.DataFrame(data)
 
-    # --- CẬP NHẬT CÂU THÔNG BÁO Ở ĐÂY ---
-    st.info(f"💡 Nhập Link vào bảng ➡ Hệ thống tự động kiểm tra. Nếu báo **'⛔ Thiếu quyền'**, hãy **COPY Email Robot getdulieu@kin-kin-477902.iam.gserviceaccount.com** và Share quyền Editor cho nó.")
+    # Info & Hướng dẫn
+    st.info(f"💡 Nhập Link vào bảng ➡ Hệ thống tự động kiểm tra. Nếu báo **'⛔ Thiếu quyền'**, hãy **COPY Email Robot bên dưới** và Share quyền Editor cho nó.")
 
     # Data Editor
     edited_df = st.data_editor(
@@ -162,26 +169,29 @@ def main_ui():
 
     # AUTO CHECK LOGIC
     if not edited_df.equals(st.session_state['df_config']):
-        creds = get_creds()
-        for index, row in edited_df.iterrows():
-            link_src = row['Link dữ liệu lấy dữ liệu']
-            link_dst = row['Link dữ liệu đích']
-            new_status_parts = []
-            
-            if link_src and "docs.google.com" in str(link_src):
-                ok, msg = verify_access_fast(link_src, creds)
-                if not ok: new_status_parts.append(f"Nguồn: {msg}")
-            
-            if link_dst and "docs.google.com" in str(link_dst):
-                ok, msg = verify_access_fast(link_dst, creds)
-                if not ok: new_status_parts.append(f"Đích: {msg}")
-            
-            if new_status_parts: edited_df.at[index, 'Trạng thái'] = " | ".join(new_status_parts)
-            elif (link_src or link_dst): edited_df.at[index, 'Trạng thái'] = "✅ Sẵn sàng"
-            else: edited_df.at[index, 'Trạng thái'] = ""
+        try:
+            creds = get_creds()
+            for index, row in edited_df.iterrows():
+                link_src = row['Link dữ liệu lấy dữ liệu']
+                link_dst = row['Link dữ liệu đích']
+                new_status_parts = []
+                
+                if link_src and "docs.google.com" in str(link_src):
+                    ok, msg = verify_access_fast(link_src, creds)
+                    if not ok: new_status_parts.append(f"Nguồn: {msg}")
+                
+                if link_dst and "docs.google.com" in str(link_dst):
+                    ok, msg = verify_access_fast(link_dst, creds)
+                    if not ok: new_status_parts.append(f"Đích: {msg}")
+                
+                if new_status_parts: edited_df.at[index, 'Trạng thái'] = " | ".join(new_status_parts)
+                elif (link_src or link_dst): edited_df.at[index, 'Trạng thái'] = "✅ Sẵn sàng"
+                else: edited_df.at[index, 'Trạng thái'] = ""
 
-        st.session_state['df_config'] = edited_df
-        st.rerun()
+            st.session_state['df_config'] = edited_df
+            st.rerun()
+        except Exception as e:
+            st.error(f"Lỗi cấu hình Key: {e}")
 
     # HIỂN THỊ CẢNH BÁO EMAIL
     error_rows = edited_df[edited_df['Trạng thái'].astype(str).str.contains("Thiếu quyền", na=False)]
@@ -191,7 +201,6 @@ def main_ui():
         
         c1, c2 = st.columns([3, 1])
         with c1:
-            # --- CẬP NHẬT TEXT TẠI ĐÂY ---
             st.markdown(f"**👉 COPY Email Robot này và Share quyền Editor:**")
             st.code(BOT_EMAIL_DISPLAY, language="text")
         with c2:
@@ -239,5 +248,3 @@ def main_ui():
 if __name__ == "__main__":
     if check_login():
         main_ui()
-
-
