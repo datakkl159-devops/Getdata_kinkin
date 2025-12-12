@@ -25,7 +25,7 @@ BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
 SHEET_LOG_NAME = "log_lanthucthi"
 
-# --- TÊN 3 CỘT QUẢN LÝ (Chỉ thêm 3 cột này vào cuối) ---
+# --- 3 CỘT QUẢN LÝ (SẼ NẰM CUỐI CÙNG) ---
 COL_LINK_SRC = "Link file nguồn"
 COL_LABEL_SRC = "Tên nguồn (Nhãn)"
 COL_MONTH_SRC = "Tháng"
@@ -99,16 +99,19 @@ def load_history_config(creds, current_user_id):
         df_user = df_all[df_all['User_ID'] == current_user_id].copy()
         if 'User_ID' in df_user.columns: df_user = df_user.drop(columns=['User_ID'])
         
+        # Xóa cột 'Chọn' nếu tồn tại từ phiên bản cũ
+        if 'Chọn' in df_user.columns:
+            df_user = df_user.drop(columns=['Chọn'])
+
         if 'Ngày chốt' in df_user.columns:
             df_user['Ngày chốt'] = pd.to_datetime(df_user['Ngày chốt'], errors='coerce').dt.date
+        
+        # Logic chuẩn hóa Trạng thái
         if 'Trạng thái' in df_user.columns:
-            # Sửa: Nếu trạng thái trống, mặc định là False (Chưa chọn)
-            df_user['Trạng thái'] = df_user['Trạng thái'].apply(lambda x: False if pd.isna(x) or str(x).strip() == "" else (True if str(x).upper() == "TRUE" else False))
-        
-        # --- CỘT CHỌN (CHECKBOX) ---
-        # Đổi tên cột 'Trạng thái' thành 'Chọn' để dùng Checkbox cho dễ
-        df_user = df_user.rename(columns={'Trạng thái': 'Chọn'})
-        
+            df_user['Trạng thái'] = df_user['Trạng thái'].apply(lambda x: "Chưa chốt" if pd.isna(x) or str(x).strip() == "" else str(x))
+        else:
+            df_user['Trạng thái'] = "Chưa chốt"
+
         if 'Hành động' in df_user.columns:
             df_user['Hành động'] = df_user['Hành động'].fillna("")
             
@@ -130,11 +133,12 @@ def save_history_config(df_ui, creds, current_user_id):
         df_new = df_ui.copy()
         df_new['User_ID'] = current_user_id
         
-        # Đổi lại tên cột 'Chọn' thành 'Trạng thái' để lưu
-        df_new = df_new.rename(columns={'Chọn': 'Trạng thái'})
-        
-        # Convert bool -> TRUE/FALSE string
-        df_new['Trạng thái'] = df_new['Trạng thái'].apply(lambda x: "TRUE" if x else "FALSE")
+        # Cập nhật hành động trước khi lưu
+        for idx, row in df_new.iterrows():
+            if row['Trạng thái'] == "Đã chốt":
+                df_new.at[idx, 'Hành động'] = "Đã cập nhật"
+            else:
+                df_new.at[idx, 'Hành động'] = "Xóa & Cập nhật"
 
         if 'Ngày chốt' in df_new.columns:
             df_new['Ngày chốt'] = df_new['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
@@ -150,7 +154,7 @@ def save_history_config(df_ui, creds, current_user_id):
         st.toast(f"✅ Đã lưu cấu hình!", icon="💾")
     except Exception as e: st.error(f"Lỗi lưu: {e}")
 
-# --- 5. CORE ENGINE ---
+# --- 5. CORE ENGINE (SAFE MODE) ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link không hợp lệ"
@@ -191,10 +195,10 @@ def fetch_single_csv_safe(row_config, token):
     try:
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code == 200:
-            # 1. Đọc dữ liệu GỐC (Giữ nguyên mọi thứ)
+            # Đọc giữ nguyên bản
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
             
-            # 2. CHỈ THÊM 3 CỘT VÀO CUỐI (KHÔNG ĐỤNG CỘT CŨ)
+            # CHỈ THÊM 3 CỘT QUẢN LÝ VÀO CUỐI
             df = df.with_columns([
                 pl.lit(link_src).cast(pl.Utf8).alias(COL_LINK_SRC),
                 pl.lit(display_label).cast(pl.Utf8).alias(COL_LABEL_SRC),
@@ -204,13 +208,12 @@ def fetch_single_csv_safe(row_config, token):
         return None, sheet_id, "Lỗi HTTP"
     except Exception as e: return None, sheet_id, str(e)
 
-def smart_update_safe(df_new_updates, target_link, creds, links_to_remove):
+def smart_update_by_link(df_new_updates, target_link, creds, links_to_remove):
     """
-    LOGIC AN TOÀN TUYỆT ĐỐI:
-    1. Đọc file đích lên.
-    2. Nếu file đích chưa có cột 'Link file nguồn', coi như chưa có dữ liệu quản lý -> Xóa sạch hoặc Append? -> Để an toàn: Giữ nguyên dữ liệu cũ (nếu có) và Append mới vào.
-    3. Nếu file đích CÓ cột 'Link file nguồn': Lọc bỏ các dòng có Link trùng với links_to_remove.
-    4. Gộp dữ liệu mới vào cuối (Append).
+    LOGIC:
+    1. Đọc file đích.
+    2. Nếu có cột Link -> Xóa dòng có link trùng với list đang chạy.
+    3. Nối mới vào cuối.
     """
     try:
         gc = gspread.authorize(creds)
@@ -233,35 +236,37 @@ def smart_update_safe(df_new_updates, target_link, creds, links_to_remove):
             r = requests.get(export_url, headers=headers)
             if r.status_code == 200:
                 df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
+                
+                # Chuẩn hóa tên cột Link để đảm bảo logic xóa hoạt động
+                rename_map = {}
+                for col in df_current.columns:
+                    if col.strip() == "Link Nguồn": rename_map[col] = COL_LINK_SRC
+                if rename_map: df_current = df_current.rename(rename_map)
         except: pass
 
-        # --- BƯỚC 1: XÓA CŨ DỰA TRÊN CỘT 'LINK FILE NGUỒN' ---
+        # --- XÓA CŨ (THEO LINK) ---
         if not df_current.is_empty():
             if COL_LINK_SRC in df_current.columns:
-                # Giữ lại những dòng KHÔNG có link trùng với danh sách đang chạy
                 df_keep = df_current.filter(~pl.col(COL_LINK_SRC).is_in(links_to_remove))
             else:
-                # File đích chưa có cột Link -> Không xóa gì cả (Giữ nguyên data cũ của họ)
-                df_keep = df_current 
+                df_keep = df_current # Chưa có cột Link -> Giữ nguyên
         else:
             df_keep = pl.DataFrame()
 
-        # --- BƯỚC 2: GỘP (APPEND) ---
-        # Polars sẽ tự động điền null vào các cột lệch nhau
+        # --- GỘP MỚI VÀO CUỐI ---
         if not df_new_updates.is_empty():
             df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
         else:
             df_final = df_keep
 
-        # --- BƯỚC 3: GHI ĐÈ ---
+        # --- GHI ĐÈ ---
         pdf = df_final.to_pandas().fillna('')
         data_values = pdf.values.tolist()
         
-        # Ghi cả Header để đảm bảo cột mới (Y, Z, AA) được thêm vào đúng tên
         wks.clear()
         wks.update([pdf.columns.tolist()] + data_values)
 
-        return True, f"Xong. Tổng: {len(pdf)} dòng."
+        return True, f"Cập nhật xong. Tổng: {len(pdf)} dòng."
 
     except Exception as e: return False, str(e)
 
@@ -299,7 +304,7 @@ def process_pipeline_safe(rows_to_process, user_id):
             results_map[idx] = df
             
             if df is not None:
-                links_processing.append(link_src)
+                links_processing.append(link_src) # Lưu link để xóa
 
             d_log = row.get('Ngày chốt', '')
             log_date = d_log.strftime("%d/%m/%Y") if isinstance(d_log, (datetime, pd.Timestamp)) else str(d_log)
@@ -315,7 +320,6 @@ def process_pipeline_safe(rows_to_process, user_id):
             log_entries.append(log_row)
 
     sorted_dfs = []
-    # Gộp theo thứ tự nhập liệu
     for i in range(len(rows_to_process)):
         if i in results_map and results_map[i] is not None:
             sorted_dfs.append(results_map[i])
@@ -325,7 +329,8 @@ def process_pipeline_safe(rows_to_process, user_id):
     
     if sorted_dfs:
         df_new = pl.concat(sorted_dfs, how="vertical", rechunk=True)
-        success, msg = smart_update_safe(df_new, target_link, creds, links_processing)
+        # GỌI HÀM UPDATE AN TOÀN
+        success, msg = smart_update_by_link(df_new, target_link, creds, links_processing)
         final_msg = msg
     else:
         final_msg = "Không tải được dữ liệu nào"
@@ -339,28 +344,28 @@ def main_ui():
     user_id = st.session_state.get('current_user_id', 'Unknown')
     st.title(f"⚙️ Tool Quản Lý Data (User: {user_id})")
     
+    # 1. LOAD CONFIG
     if 'df_config' not in st.session_state:
         creds = get_creds()
         with st.spinner("⏳ Tải cấu hình..."):
             df = load_history_config(creds, user_id)
         
-        # Quay về Checkbox "Chọn" thay vì Dropdown Trạng thái
-        col_order = ["Chọn", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu", "Tên nguồn (Nhãn)", "Hành động"]
+        col_order = ["Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu", "Tên nguồn (Nhãn)", "Hành động"]
         st.session_state['scan_errors'] = []
 
         if df is not None and not df.empty:
             for col in col_order:
                 if col not in df.columns: 
-                    df[col] = False if col == "Chọn" else ""
+                    df[col] = "Chưa chốt" if col == "Trạng thái" else ""
             st.session_state['df_config'] = df[col_order]
         else:
             data = {c: [] for c in col_order}
             data["Ngày chốt"] = [datetime.now().date()]
-            data["Chọn"] = [False]
-            data["Hành động"] = [""]
+            data["Trạng thái"] = ["Chưa chốt"]
+            data["Hành động"] = ["Xóa & Cập nhật"]
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info("💡 **Safe Mode:** Chỉ thêm 3 cột quản lý vào cuối. Giữ nguyên dữ liệu gốc.")
+    st.info("💡 **Logic:** Xóa cũ (theo Link) -> Nối mới (Append). Giữ nguyên dữ liệu gốc.")
 
     if 'scan_errors' in st.session_state and st.session_state['scan_errors']:
         st.error(f"⚠️ Có {len(st.session_state['scan_errors'])} link lỗi!")
@@ -371,11 +376,12 @@ def main_ui():
             st.code(BOT_EMAIL_DISPLAY, language="text")
         st.divider()
 
+    # 2. EDITOR
     edited_df = st.data_editor(
         st.session_state['df_config'],
         num_rows="dynamic",
         column_config={
-            "Chọn": st.column_config.CheckboxColumn("Chọn", width="small"),
+            "Trạng thái": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt", "Đã chốt"], required=True, width="small"),
             "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"),
             "Hành động": st.column_config.TextColumn("Hành động", disabled=True),
             "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"),
@@ -385,10 +391,11 @@ def main_ui():
         key="editor"
     )
 
+    # 3. AUTO LOGIC
     if not edited_df.equals(st.session_state['df_config']):
         for idx, row in edited_df.iterrows():
-            if row['Chọn']: edited_df.at[idx, 'Hành động'] = "Sẽ chạy"
-            else: edited_df.at[idx, 'Hành động'] = ""
+            if row['Trạng thái'] == "Chưa chốt": edited_df.at[idx, 'Hành động'] = "Xóa & Cập nhật"
+            elif row['Trạng thái'] == "Đã chốt": edited_df.at[idx, 'Hành động'] = "Đã cập nhật"
         
         creds = get_creds()
         scan_errors = []
@@ -406,19 +413,19 @@ def main_ui():
         st.session_state['df_config'] = edited_df
         st.rerun()
 
+    # 4. BUTTONS
     st.divider()
     col_run, col_scan, col_save = st.columns([3, 1, 1])
     
     with col_run:
-        if st.button("▶️ CẬP NHẬT DỮ LIỆU (ĐÃ CHỌN)", type="primary"):
+        if st.button("▶️ CẬP NHẬT DỮ LIỆU (CHƯA CHỐT)", type="primary"):
             if st.session_state.get('scan_errors'):
                 st.error("❌ Link lỗi. Vui lòng xử lý!")
             else:
-                # Lọc những dòng ĐƯỢC CHECK
-                rows_to_run = edited_df[edited_df['Chọn'] == True].to_dict('records')
+                rows_to_run = edited_df[edited_df['Trạng thái'] == "Chưa chốt"].to_dict('records')
                 
                 if not rows_to_run:
-                    st.warning("⚠️ Vui lòng tích chọn ít nhất 1 dòng.")
+                    st.warning("⚠️ Không có dòng 'Chưa chốt'.")
                 else:
                     target_link = rows_to_run[0]['Link dữ liệu đích']
                     if not target_link:
@@ -428,7 +435,7 @@ def main_ui():
                     with st.status("🚀 Đang xử lý...", expanded=True) as status:
                         st.write(f"Đang chạy {len(rows_to_run)} nguồn...")
                         for idx, row in edited_df.iterrows():
-                            if row['Chọn']: edited_df.at[idx, 'Hành động'] = "🔄 Đang chạy..."
+                            if row['Trạng thái'] == "Chưa chốt": edited_df.at[idx, 'Hành động'] = "🔄 Đang chạy..."
                         st.session_state['df_config'] = edited_df
                         
                         success, msg = process_pipeline_safe(rows_to_run, user_id)
@@ -438,9 +445,9 @@ def main_ui():
                             st.success(f"🎉 {msg}")
                             st.balloons()
                             for idx, row in edited_df.iterrows():
-                                if row['Chọn']:
-                                    edited_df.at[idx, 'Chọn'] = False # Bỏ tích sau khi chạy xong
-                                    edited_df.at[idx, 'Hành động'] = "Đã xong"
+                                if row['Trạng thái'] == "Chưa chốt":
+                                    edited_df.at[idx, 'Trạng thái'] = "Đã chốt"
+                                    edited_df.at[idx, 'Hành động'] = "Đã cập nhật"
                             
                             creds = get_creds()
                             save_history_config(edited_df, creds, user_id)
