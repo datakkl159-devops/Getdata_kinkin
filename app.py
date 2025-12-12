@@ -150,7 +150,7 @@ def verify_access_fast(url, creds):
     except gspread.exceptions.APIError as e:
         if "403" in str(e): return False, "⛔ Chưa cấp quyền (403)"
         return False, f"❌ Lỗi khác: {e}"
-    except Exception as e: return False, f"❌ Lỗi mạng: {e}"
+    except Exception as e: return False, f"❌ Chưa cấp quyền cho gmail bot: {e}"
 
 def fetch_single_csv_with_id(row_config, token):
     link_src = row_config.get('Link dữ liệu lấy dữ liệu', '')
@@ -316,7 +316,7 @@ def main_ui():
         for err in st.session_state['scan_errors']: st.write(f"- {err}")
         c1, c2 = st.columns([3,1])
         with c1:
-            st.markdown(f"**👉 COPY Email Robot:**")
+            st.markdown(f"**👉 COPY Email Robot cấp quyền Xem:**")
             st.code(BOT_EMAIL_DISPLAY, language="text")
         st.divider()
 
@@ -449,3 +449,4 @@ def main_ui():
 if __name__ == "__main__":
     if check_login():
         main_ui()
+
