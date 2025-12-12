@@ -94,7 +94,7 @@ def load_history_config(creds, current_user_id):
         df_user = df_all[df_all['User_ID'] == current_user_id].copy()
         if 'User_ID' in df_user.columns: df_user = df_user.drop(columns=['User_ID'])
         
-        # --- FIX TYPE ---
+        # Fix Type
         if 'Ngày chốt' in df_user.columns:
             df_user['Ngày chốt'] = pd.to_datetime(df_user['Ngày chốt'], errors='coerce').dt.date
         if 'Trạng thái' in df_user.columns:
@@ -102,12 +102,6 @@ def load_history_config(creds, current_user_id):
         if 'Hành động' in df_user.columns:
             df_user['Hành động'] = df_user['Hành động'].fillna("")
             
-        # --- TẠO SỐ THỨ TỰ (STT) ---
-        if 'STT' in df_user.columns:
-            df_user = df_user.drop(columns=['STT'])
-        
-        df_user.insert(0, 'STT', range(1, len(df_user) + 1))
-
         return df_user
     except: return None
 
@@ -126,14 +120,20 @@ def save_history_config(df_ui, creds, current_user_id):
         df_new = df_ui.copy()
         df_new['User_ID'] = current_user_id
         
+        # Cập nhật hành động
         for idx, row in df_new.iterrows():
             if row['Trạng thái'] == "Đã chốt":
                 df_new.at[idx, 'Hành động'] = "Đã cập nhật"
             else:
                 df_new.at[idx, 'Hành động'] = "Xóa & Cập nhật"
 
+        # Date to String
         if 'Ngày chốt' in df_new.columns:
             df_new['Ngày chốt'] = df_new['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
+
+        # Xóa cột STT trước khi lưu (để khi load lại tự đánh lại cho chuẩn)
+        if 'STT' in df_new.columns:
+            df_new = df_new.drop(columns=['STT'])
 
         final_df = df_new
         if not df_all.empty and 'User_ID' in df_all.columns:
@@ -188,8 +188,6 @@ def fetch_single_csv_with_id(row_config, token):
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code == 200:
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
-            
-            # Cố định tên cột là "Tháng Chốt"
             df = df.with_columns([
                 pl.lit(sheet_id).alias("System_Source_ID"), 
                 pl.lit(display_label).alias("Tên_Nguồn"),
@@ -356,7 +354,7 @@ def main_ui():
             data["Hành động"] = ["Xóa & Cập nhật"]
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info("💡 **Logic:** Chỉ xử lý 'Chưa chốt'. Tự động đánh số thứ tự.")
+    st.info("💡 **Logic:** Tự động đánh STT. Cột Index mặc định đã được ẩn.")
 
     if 'scan_errors' in st.session_state and st.session_state['scan_errors']:
         st.error(f"⚠️ Có {len(st.session_state['scan_errors'])} link lỗi!")
@@ -367,6 +365,7 @@ def main_ui():
             st.code(BOT_EMAIL_DISPLAY, language="text")
         st.divider()
 
+    # --- KHU VỰC EDITOR ---
     edited_df = st.data_editor(
         st.session_state['df_config'],
         num_rows="dynamic",
@@ -380,16 +379,22 @@ def main_ui():
         },
         use_container_width=True,
         key="editor",
-        hide_index=True  # <--- ẨN CỘT INDEX MẶC ĐỊNH
+        hide_index=True # <--- ĐÃ ẨN CỘT KHOANH ĐỎ
     )
 
+    # --- LOGIC TỰ ĐỘNG CẬP NHẬT KHI CÓ THAY ĐỔI ---
     if not edited_df.equals(st.session_state['df_config']):
-        edited_df['STT'] = range(1, len(edited_df) + 1) # Auto STT
-
+        
+        # 1. Tự động đánh số thứ tự lại từ đầu (Quan trọng)
+        edited_df = edited_df.reset_index(drop=True)
+        edited_df['STT'] = range(1, len(edited_df) + 1)
+        
+        # 2. Cập nhật trạng thái hành động
         for idx, row in edited_df.iterrows():
             if row['Trạng thái'] == "Chưa chốt": edited_df.at[idx, 'Hành động'] = "Xóa & Cập nhật"
             elif row['Trạng thái'] == "Đã chốt": edited_df.at[idx, 'Hành động'] = "Đã cập nhật"
         
+        # 3. Quét lỗi link
         creds = get_creds()
         scan_errors = []
         for idx, row in edited_df.iterrows():
@@ -406,6 +411,7 @@ def main_ui():
         st.session_state['df_config'] = edited_df
         st.rerun()
 
+    # BUTTONS
     st.divider()
     col_run, col_scan, col_save = st.columns([3, 1, 1])
     
