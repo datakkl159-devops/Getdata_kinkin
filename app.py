@@ -6,6 +6,7 @@ import io
 import concurrent.futures
 import time
 import gspread
+from gspread_dataframe import get_as_dataframe, set_with_dataframe
 from datetime import datetime
 from google.oauth2 import service_account
 import google.auth.transport.requests
@@ -14,7 +15,7 @@ import google.auth.transport.requests
 st.set_page_config(page_title="Tool Xử Lý Data (Copy 1:1)", layout="wide")
 PASSWORD_ACCESS = "admin2024"
 BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
-SHEET_CONFIG_NAME = "luu_cau_hinh" # Tên tab cố định
+SHEET_CONFIG_NAME = "luu_cau_hinh" 
 
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets', 
@@ -48,7 +49,7 @@ def extract_id(url):
         except: return None
     return None
 
-# --- 3. QUẢN LÝ LỊCH SỬ (LOGIC MỚI: TỰ TẠO HOẶC GHI ĐÈ) ---
+# --- 3. QUẢN LÝ LỊCH SỬ (ĐÃ FIX LỖI DATE JSON) ---
 def load_history_config(creds):
     history_id = st.secrets["gcp_service_account"].get("history_sheet_id")
     if not history_id: return None
@@ -57,54 +58,56 @@ def load_history_config(creds):
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(history_id)
         
-        # Cố gắng tìm đúng tab "luu_cau_hinh"
-        try: 
-            wks = sh.worksheet(SHEET_CONFIG_NAME)
-        except: 
-            # Nếu không tìm thấy tab đó thì trả về None (để dùng mặc định)
-            return None
+        try: wks = sh.worksheet(SHEET_CONFIG_NAME)
+        except: return None
         
         data = wks.get_all_records()
         if not data: return None
         
         df = pd.DataFrame(data)
-        # Fix lỗi Checkbox đọc về bị thành string
+        
+        # 1. Fix lỗi Checkbox (String -> Bool)
         if 'Hành động' in df.columns:
             df['Hành động'] = df['Hành động'].astype(str).str.upper() == 'TRUE'
+            
+        # 2. Fix lỗi Ngày tháng (String -> Date Object) để hiện đúng trên lịch
+        if 'Ngày chốt' in df.columns:
+            # Chuyển từ chuỗi "2025-12-12" thành đối tượng Date
+            df['Ngày chốt'] = pd.to_datetime(df['Ngày chốt'], errors='coerce').dt.date
+            
         return df
     except Exception as e:
         print(f"Lỗi load history: {e}")
         return None
 
 def save_history_config(df, creds):
-    """
-    Logic: Tìm tab 'luu_cau_hinh'. 
-    - Chưa có -> Tạo mới.
-    - Có rồi -> Xóa sạch cũ -> Ghi mới (Cập nhật bản mới nhất).
-    """
+    """Lưu lịch sử (Đã thêm xử lý Date -> String)"""
     history_id = st.secrets["gcp_service_account"].get("history_sheet_id")
     if not history_id:
-        st.error("⚠️ Lỗi: Chưa cấu hình ID Sheet Lịch Sử!")
+        st.error("⚠️ Lỗi: Chưa có ID Sheet Lịch Sử!")
         return
 
     try:
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(history_id)
         
-        # 1. Kiểm tra và Tạo Tab
+        # Tìm hoặc tạo tab
         try:
             wks = sh.worksheet(SHEET_CONFIG_NAME)
         except gspread.WorksheetNotFound:
-            # Nếu chưa có thì TẠO MỚI
             wks = sh.add_worksheet(title=SHEET_CONFIG_NAME, rows=100, cols=20)
             
-        # 2. Ghi Dữ Liệu (Xóa cũ ghi mới)
-        wks.clear() # Xóa sạch dữ liệu cũ để đảm bảo không bị thừa dòng rác
+        wks.clear() 
         
         pdf = df.copy()
-        # Chuyển bool -> TRUE/FALSE text
+        
+        # 1. Xử lý Checkbox -> String
         if 'Hành động' in pdf.columns:
             pdf['Hành động'] = pdf['Hành động'].apply(lambda x: "TRUE" if x else "FALSE")
+            
+        # 2. XỬ LÝ DATE -> STRING (FIX LỖI JSON SERIALIZABLE)
+        if 'Ngày chốt' in pdf.columns:
+            pdf['Ngày chốt'] = pdf['Ngày chốt'].astype(str)
         
         pdf = pdf.fillna('')
         data_to_write = [pdf.columns.tolist()] + pdf.values.tolist()
@@ -192,7 +195,6 @@ def main_ui():
             st.session_state['df_config'] = df_history[expected_cols]
             st.toast(f"Đã tải cấu hình từ tab '{SHEET_CONFIG_NAME}'", icon="📂")
         else:
-            # Mặc định
             data = {
                 "Hành động": [False, False], 
                 "Ngày chốt": [datetime.now().date(), datetime.now().date()],
@@ -214,8 +216,9 @@ def main_ui():
         column_config={
             "Hành động": st.column_config.CheckboxColumn("Chọn", width="small"),
             "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"),
-            "Link dữ liệu đích": st.column_config.TextColumn("Link Đích (Ghi vào)", width="medium"),
+            "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"),
             "Trạng thái": st.column_config.TextColumn("Trạng thái", disabled=True, width="medium"),
+            "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"),
         },
         use_container_width=True,
         key="editor"
@@ -229,7 +232,6 @@ def main_ui():
                 link_src = row['Link dữ liệu lấy dữ liệu']
                 link_dst = row['Link dữ liệu đích']
                 new_status_parts = []
-                
                 if link_src and "docs.google.com" in str(link_src):
                     ok, msg = verify_access_fast(link_src, creds)
                     if not ok: new_status_parts.append(f"Nguồn: {msg}")
@@ -266,12 +268,10 @@ def main_ui():
         if st.button("▶️ TỔNG HỢP & GHI DATA", type="primary"):
             selected_rows = edited_df[edited_df["Hành động"] == True].to_dict('records')
             
-            # Auto Save History
             with st.spinner(f"💾 Đang lưu bản mới nhất vào '{SHEET_CONFIG_NAME}'..."):
                 creds = get_creds()
                 save_history_config(edited_df, creds)
             
-            # Validate
             has_error = any("Thiếu quyền" in str(row.get('Trạng thái', '')) for row in selected_rows)
             if has_error:
                 st.error("❌ Cấp quyền trước khi chạy!")
