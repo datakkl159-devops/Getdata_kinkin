@@ -119,7 +119,6 @@ def save_history_config(df_ui, creds, current_user_id):
         df_new = df_ui.copy()
         df_new['User_ID'] = current_user_id
         
-        # Logic cập nhật Hành động
         for idx, row in df_new.iterrows():
             if row['Trạng thái'] == "Đã chốt":
                 df_new.at[idx, 'Hành động'] = "Đã cập nhật"
@@ -142,9 +141,11 @@ def save_history_config(df_ui, creds, current_user_id):
 
 # --- 5. CORE ENGINE & CHECK QUYỀN ---
 def verify_access_fast(url, creds):
-    """Kiểm tra xem Robot có vào được link không"""
+    """Check quyền truy cập, trả về True/False và Message"""
+    if not url or "docs.google.com" not in str(url): return True, "" # Bỏ qua nếu chưa nhập link
+    
     sheet_id = extract_id(url)
-    if not sheet_id: return False, "Link không hợp lệ"
+    if not sheet_id: return False, "Link sai định dạng"
     try:
         gc = gspread.authorize(creds)
         gc.open_by_key(sheet_id)
@@ -273,13 +274,17 @@ def main_ui():
     user_id = st.session_state.get('current_user_id', 'Unknown')
     st.title(f"⚙️ Tool Quản Lý Data (User: {user_id})")
     
-    # LOAD CONFIG
+    # 1. LOAD CONFIG
     if 'df_config' not in st.session_state:
         creds = get_creds()
         with st.spinner("⏳ Tải cấu hình..."):
             df = load_history_config(creds, user_id)
         
         col_order = ["Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu", "Tên nguồn (Nhãn)", "Trạng thái", "Hành động"]
+        
+        # Init Error State
+        st.session_state['scan_errors'] = []
+
         if df is not None and not df.empty:
             for col in col_order:
                 if col not in df.columns: 
@@ -292,9 +297,21 @@ def main_ui():
             data["Hành động"] = ["Xóa & Cập nhật"]
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info("💡 **Logic:** Chỉ xử lý dòng 'Chưa chốt'. Tự động kiểm tra quyền truy cập.")
+    st.info("💡 **Logic:** Tự động quét lỗi link (403) ngay khi bạn nhập.")
 
-    # EDITOR
+    # 2. KHU VỰC HIỂN THỊ LỖI (QUAN TRỌNG: ĐẶT TRÊN CÙNG)
+    if 'scan_errors' in st.session_state and st.session_state['scan_errors']:
+        st.error(f"⚠️ Phát hiện {len(st.session_state['scan_errors'])} link chưa được cấp quyền!")
+        for err in st.session_state['scan_errors']:
+            st.write(f"- {err}")
+        
+        c1, c2 = st.columns([3,1])
+        with c1:
+            st.markdown(f"**👉 COPY Email Robot này và Share quyền Editor:**")
+            st.code(BOT_EMAIL_DISPLAY, language="text")
+        st.divider()
+
+    # 3. EDITOR
     edited_df = st.data_editor(
         st.session_state['df_config'],
         num_rows="dynamic",
@@ -309,17 +326,17 @@ def main_ui():
         key="editor"
     )
 
-    # --- TÍNH NĂNG MỚI: QUÉT QUYỀN TRUY CẬP (AUTO SCAN) ---
-    # Khi user nhập liệu xong (Dataframe thay đổi), hệ thống sẽ quét lỗi
+    # 4. LOGIC QUÉT LỖI TỰ ĐỘNG (AUTO SCAN ON CHANGE)
     if not edited_df.equals(st.session_state['df_config']):
-        # 1. Update cột Hành động
+        
+        # Cập nhật UI Hành động
         for idx, row in edited_df.iterrows():
             if row['Trạng thái'] == "Chưa chốt": edited_df.at[idx, 'Hành động'] = "Xóa & Cập nhật"
             elif row['Trạng thái'] == "Đã chốt": edited_df.at[idx, 'Hành động'] = "Đã cập nhật"
         
-        # 2. Quét Quyền (Scan Permission)
+        # --- BẮT ĐẦU QUÉT LỖI ---
         creds = get_creds()
-        permission_errors = []
+        scan_errors = []
         
         for idx, row in edited_df.iterrows():
             link_src = row.get('Link dữ liệu lấy dữ liệu', '')
@@ -328,44 +345,27 @@ def main_ui():
             # Check Nguồn
             if link_src and "docs.google.com" in str(link_src):
                 ok, msg = verify_access_fast(link_src, creds)
-                if not ok: permission_errors.append(f"Dòng {idx+1} (Nguồn): {msg}")
+                if not ok: scan_errors.append(f"Dòng {idx+1} (Nguồn): {msg}")
             
             # Check Đích
             if link_dst and "docs.google.com" in str(link_dst):
                 ok, msg = verify_access_fast(link_dst, creds)
-                if not ok: permission_errors.append(f"Dòng {idx+1} (Đích): {msg}")
+                if not ok: scan_errors.append(f"Dòng {idx+1} (Đích): {msg}")
 
-        # Lưu lỗi vào session để hiển thị
-        st.session_state['permission_errors'] = permission_errors
+        # Lưu lỗi và cập nhật state -> Rerun để hiện lỗi lên trên cùng
+        st.session_state['scan_errors'] = scan_errors
         st.session_state['df_config'] = edited_df
         st.rerun()
 
-    # --- HIỂN THỊ CẢNH BÁO LỖI QUYỀN ---
-    if 'permission_errors' in st.session_state and st.session_state['permission_errors']:
-        st.error(f"⚠️ Phát hiện {len(st.session_state['permission_errors'])} liên kết chưa cấp quyền cho Robot!")
-        for err in st.session_state['permission_errors']:
-            st.write(f"- {err}")
-        
-        st.divider()
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            st.markdown(f"**👉 COPY Email Robot này và Share quyền Editor cho các file trên:**")
-            st.code(BOT_EMAIL_DISPLAY, language="text")
-        with c2:
-            if st.button("Đã Share, Kiểm tra lại"):
-                # Trigger rerun để quét lại
-                st.session_state['df_config'] = pd.DataFrame() # Hack để force check
-                st.rerun()
-
-    # BUTTONS
+    # 5. BUTTONS
     st.divider()
     col_run, col_save = st.columns([4, 1])
     
     with col_run:
         if st.button("▶️ CẬP NHẬT DỮ LIỆU (CHƯA CHỐT)", type="primary"):
-            # Check lỗi quyền trước khi chạy
-            if 'permission_errors' in st.session_state and st.session_state['permission_errors']:
-                st.error("❌ Không thể chạy vì còn file chưa cấp quyền. Vui lòng xử lý lỗi bên trên trước.")
+            # Chặn nếu còn lỗi
+            if st.session_state.get('scan_errors'):
+                st.error("❌ Không thể chạy vì còn Link chưa cấp quyền. Vui lòng xử lý lỗi bên trên!")
             else:
                 rows_to_run = edited_df[edited_df['Trạng thái'] == "Chưa chốt"].to_dict('records')
                 
@@ -379,7 +379,8 @@ def main_ui():
 
                     with st.status("🚀 Đang xử lý...", expanded=True) as status:
                         st.write(f"Cập nhật {len(rows_to_run)} nguồn...")
-                        # Update UI
+                        
+                        # Update UI -> Running
                         for idx, row in edited_df.iterrows():
                             if row['Trạng thái'] == "Chưa chốt": edited_df.at[idx, 'Hành động'] = "🔄 Đang chạy..."
                         st.session_state['df_config'] = edited_df
@@ -391,6 +392,7 @@ def main_ui():
                             st.success(f"🎉 {msg}")
                             st.balloons()
                             
+                            # Done
                             for idx, row in edited_df.iterrows():
                                 if row['Trạng thái'] == "Chưa chốt":
                                     edited_df.at[idx, 'Trạng thái'] = "Đã chốt"
