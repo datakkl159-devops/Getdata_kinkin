@@ -73,7 +73,6 @@ def check_is_run_time(creds, history_sheet_id):
 
 def fetch_single_csv_safe(row_config, token):
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
-    # Lấy nhãn và cắt khoảng trắng
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
     month_val = str(row_config.get('Tháng', ''))
     sheet_id = extract_id(link_src)
@@ -105,11 +104,9 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
         target_id = extract_id(target_link)
         sh = gc.open_by_key(target_id)
         
-        # 1. XỬ LÝ TÊN SHEET ĐÍCH (TRIM SPACE)
         real_sheet_name = str(target_sheet_name).strip()
         if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
         
-        # 2. TẠO SHEET NẾU CHƯA CÓ
         try: wks = sh.worksheet(real_sheet_name)
         except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
         
@@ -171,14 +168,13 @@ def run_auto_job():
     wks_config = sh.worksheet(SHEET_CONFIG_NAME)
     df_config = get_as_dataframe(wks_config, evaluate_formulas=True, dtype=str)
     
+    # Logic tìm dòng chạy: Trạng thái = "Chưa cập nhật"
     rows_to_run = []
-    if 'Chọn' in df_config.columns:
-        rows_to_run = df_config[df_config['Chọn'].str.upper() == "TRUE"].to_dict('records')
-    elif 'Trạng thái' in df_config.columns:
-        rows_to_run = df_config[df_config['Trạng thái'].str.upper() == "TRUE"].to_dict('records')
+    if 'Trạng thái' in df_config.columns:
+        rows_to_run = df_config[df_config['Trạng thái'] == "Chưa cập nhật"].to_dict('records')
 
     if not rows_to_run:
-        write_auto_log(creds, HISTORY_SHEET_ID, "BỎ QUA", "Không có dòng được chọn.")
+        write_auto_log(creds, HISTORY_SHEET_ID, "BỎ QUA", "Không có dòng nào 'Chưa cập nhật'.")
         return
 
     import google.auth.transport.requests
@@ -186,11 +182,10 @@ def run_auto_job():
     creds.refresh(auth_req)
     token = creds.token
 
-    # GOM NHÓM (Cắt khoảng trắng khi gom)
     grouped_tasks = defaultdict(list)
     for row in rows_to_run:
         t_link = row.get('Link dữ liệu đích', '')
-        t_sheet = str(row.get('Tên sheet dữ liệu đích', '')).strip() # Trim space
+        t_sheet = str(row.get('Tên sheet dữ liệu đích', '')).strip()
         if not t_sheet: t_sheet = "Tong_Hop_Data"
         grouped_tasks[(t_link, t_sheet)].append(row)
 
@@ -217,9 +212,9 @@ def run_auto_job():
 
     msg_sum = " | ".join(final_msgs)
     if all_success:
-        if 'Chọn' in df_config.columns:
-            df_config.loc[df_config['Chọn'].str.upper() == "TRUE", 'Hành động'] = "Đã xong (Auto)"
-            df_config.loc[df_config['Chọn'].str.upper() == "TRUE", 'Chọn'] = "FALSE"
+        # Update config -> Đã cập nhật
+        if 'Trạng thái' in df_config.columns:
+            df_config.loc[df_config['Trạng thái'] == "Chưa cập nhật", 'Trạng thái'] = "Đã cập nhật"
         
         wks_config.clear()
         wks_config.update([df_config.columns.tolist()] + df_config.fillna('').values.tolist())
