@@ -57,9 +57,7 @@ def get_system_lock(creds, history_id):
         time_str = wks.cell(2, 3).value
         if val == "TRUE":
             try:
-                lock_time = datetime.strptime(time_str, "%d/%m/%Y %H:%M:%S")
-                diff = datetime.now() - lock_time
-                if diff.total_seconds() > 1800: return False, "", ""
+                if (datetime.now() - datetime.strptime(time_str, "%d/%m/%Y %H:%M:%S")).total_seconds() > 1800: return False, "", ""
             except: pass
             return True, user, time_str
         return False, "", ""
@@ -72,8 +70,7 @@ def set_system_lock(creds, history_id, user_id, lock=True):
         try: wks = sh.worksheet(SHEET_LOCK_NAME)
         except: wks = sh.add_worksheet(SHEET_LOCK_NAME, rows=10, cols=5)
         now_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        if lock: wks.update("A2:C2", [["TRUE", user_id, now_str]])
-        else: wks.update("A2:C2", [["FALSE", "", ""]])
+        wks.update("A2:C2", [["TRUE", user_id, now_str]] if lock else [["FALSE", "", ""]])
     except: pass
 
 def check_is_run_time(creds, history_sheet_id):
@@ -95,6 +92,7 @@ def check_is_run_time(creds, history_sheet_id):
         return False
     except: return False
 
+# --- LOGIC MỚI: TÌM DIỆT & CHÈN ---
 def fetch_single_csv_safe(row_config, token):
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
@@ -131,35 +129,57 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
             auth_req = google.auth.transport.requests.Request()
             creds.refresh(auth_req)
             token = creds.token
-        export_url = f"https://docs.google.com/spreadsheets/d/{target_id}/export?format=csv&gid={wks.id}"
-        headers = {'Authorization': f'Bearer {token}'}
-        df_current = pl.DataFrame()
-        try:
-            r = requests.get(export_url, headers=headers)
-            if r.status_code == 200:
-                df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
+
+        # 1. DELETE OLD
+        existing_headers = []
+        try: existing_headers = wks.row_values(1)
         except: pass
 
-        if not df_current.is_empty():
-            if COL_LINK_SRC in df_current.columns:
-                df_keep = df_current.filter(~pl.col(COL_LINK_SRC).is_in(links_to_remove))
-            else: df_keep = df_current 
-        else: df_keep = pl.DataFrame()
+        if existing_headers:
+            try: link_col_idx = existing_headers.index(COL_LINK_SRC) + 1
+            except ValueError: link_col_idx = None
+            
+            if link_col_idx:
+                col_values = wks.col_values(link_col_idx)
+                rows_to_delete = []
+                for i, val in enumerate(col_values):
+                    if val in links_to_remove: rows_to_delete.append(i + 1)
+                
+                if rows_to_delete:
+                    rows_to_delete.sort()
+                    ranges = []
+                    start = rows_to_delete[0]; end = start
+                    for r in rows_to_delete[1:]:
+                        if r == end + 1: end = r
+                        else: ranges.append((start, end)); start = r; end = r
+                    ranges.append((start, end))
+                    
+                    delete_reqs = []
+                    for start, end in reversed(ranges):
+                        delete_reqs.append({"deleteDimension": {"range": {"sheetId": wks.id, "dimension": "ROWS", "startIndex": start - 1, "endIndex": end}}})
+                    
+                    if delete_reqs:
+                        wks.batch_update({'requests': delete_reqs})
+                        time.sleep(1)
 
+        # 2. APPEND NEW
         if not df_new_updates.is_empty():
-            df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
-        else: df_final = df_keep
+            pdf = df_new_updates.to_pandas().fillna('')
+            data_values = pdf.values.tolist()
+            if not existing_headers:
+                headers = pdf.columns.tolist()
+                wks.append_row(headers)
+            
+            BATCH_SIZE = 5000
+            total_rows = len(data_values)
+            for i in range(0, total_rows, BATCH_SIZE):
+                chunk = data_values[i : i + BATCH_SIZE]
+                wks.append_rows(chunk)
+                time.sleep(1)
+            return True, f"OK +{total_rows} dòng"
+            
+        return True, "OK (Cleaned)"
 
-        all_cols = df_final.columns
-        data_cols = [c for c in all_cols if c not in [COL_LINK_SRC, COL_LABEL_SRC, COL_MONTH_SRC]]
-        final_order = data_cols + [COL_LINK_SRC, COL_LABEL_SRC, COL_MONTH_SRC]
-        final_cols = [c for c in final_order if c in df_final.columns]
-        df_final = df_final.select(final_cols)
-
-        pdf = df_final.to_pandas().fillna('')
-        wks.clear()
-        wks.update([pdf.columns.tolist()] + pdf.values.tolist())
-        return True, f"Sheet '{real_sheet_name}': OK {len(pdf)} dòng"
     except Exception as e: return False, str(e)
 
 def run_auto_job():
@@ -171,7 +191,7 @@ def run_auto_job():
 
     is_locked, user, _ = get_system_lock(creds, HISTORY_SHEET_ID)
     if is_locked:
-        write_auto_log(creds, HISTORY_SHEET_ID, "BỎ QUA", f"Hệ thống đang bị khóa bởi {user}")
+        write_auto_log(creds, HISTORY_SHEET_ID, "BỎ QUA", f"Lock bởi {user}")
         return
 
     set_system_lock(creds, HISTORY_SHEET_ID, "AUTO_BOT", lock=True)
@@ -183,12 +203,9 @@ def run_auto_job():
         wks_config = sh.worksheet(SHEET_CONFIG_NAME)
         df_config = get_as_dataframe(wks_config, evaluate_formulas=True, dtype=str)
         
-        # --- CẬP NHẬT TÊN TRẠNG THÁI MỚI ---
         rows_to_run = []
         if 'Trạng thái' in df_config.columns:
-            # Map giá trị
             df_config['Trạng thái'] = df_config['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
-            # Tìm dòng "Chưa chốt & đang cập nhật"
             rows_to_run = df_config[df_config['Trạng thái'] == "Chưa chốt & đang cập nhật"].to_dict('records')
 
         if not rows_to_run:
@@ -232,7 +249,6 @@ def run_auto_job():
         if all_success:
             if 'Trạng thái' in df_config.columns:
                 df_config.loc[df_config['Trạng thái'] == "Chưa chốt & đang cập nhật", 'Hành động'] = "Đã xong (Auto)"
-                # Giữ nguyên trạng thái để chạy tiếp lần sau
             
             wks_config.clear()
             wks_config.update([df_config.columns.tolist()] + df_config.fillna('').values.tolist())
