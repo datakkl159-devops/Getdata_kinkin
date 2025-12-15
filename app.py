@@ -8,7 +8,7 @@ import time
 import gspread
 import json
 from gspread_dataframe import get_as_dataframe
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from google.oauth2 import service_account
 import google.auth.transport.requests
 import pytz
@@ -124,18 +124,28 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- 4. HÀM QUÉT QUYỀN (THÔNG BÁO CỐ ĐỊNH) ---
+# --- 4. HÀM QUÉT QUYỀN (FORCE MESSAGE) ---
 def verify_access_fast(url, creds, role_type="view"):
+    """
+    role_type: 'view' (Nguồn) hoặc 'edit' (Đích)
+    Nếu có bất kỳ lỗi nào -> Trả về thông báo CỐ ĐỊNH theo role_type
+    """
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi/Sai định dạng"
     
-    msg_error = "⛔ Chưa cấp quyền: Cần share quyền **CHỈNH SỬA (Editor)**" if role_type == "edit" else "⛔ Chưa cấp quyền: Cần share quyền **XEM (Viewer)**"
+    # THÔNG BÁO CỐ ĐỊNH (KHÔNG QUAN TÂM LỖI GÌ)
+    if role_type == "edit":
+        msg_error = "⛔ Chưa có quyền: Cần share quyền **CHỈNH SỬA (Editor)**"
+    else:
+        msg_error = "⛔ Chưa có quyền: Cần share quyền **XEM (Viewer)**"
 
     try:
         gc = gspread.authorize(creds)
+        # Cố gắng mở file để test
         gc.open_by_key(sheet_id) 
         return True, "OK"
     except:
+        # Bắt TẤT CẢ các lỗi và trả về thông báo cố định
         return False, msg_error
 
 # --- 5. LOGIC XỬ LÝ DỮ LIỆU ---
@@ -357,17 +367,19 @@ def main_ui():
     scan_result_placeholder = st.container()
     creds = get_creds()
 
-    # --- HÀM LOAD CẤU HÌNH VỚI LOGIC XỬ LÝ DATE NGHIÊM NGẶT ---
     def load_conf(creds):
         gc = gspread.authorize(creds)
         try:
             sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
         except (PermissionError, gspread.exceptions.APIError):
-            st.error("🚨 LỖI TRẦM TRỌNG: Bot không vào được File Cấu Hình!")
+            st.error("🚨 LỖI TRẦM TRỌNG: Bot không vào được File Cấu Hình Hệ Thống!")
+            st.warning("👉 Nguyên nhân: Bạn chưa cấp quyền cho Bot vào File Google Sheet Cấu Hình (File chứa lịch sử).")
+            st.info("👉 Hãy copy Email dưới đây và Share quyền **Editor** cho File Cấu Hình:")
+            st.code(BOT_EMAIL_DISPLAY, language="text")
             st.stop()
             
         wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # Load tất cả là string để dễ xử lý
+        # --- FIX DỨT ĐIỂM: LOAD TOÀN BỘ LÀ STRING ---
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df = df.dropna(how='all')
         
@@ -384,26 +396,11 @@ def main_ui():
         for c in req_cols:
             if c not in df.columns: df[c] = ""
 
-        # --- ĐÂY LÀ PHẦN FIX LỖI STREAMLIT API EXCEPTION ---
+        # --- KHÔNG ÉP KIỂU DATE NỮA, ĐỂ NGUYÊN TEXT (Tránh crash) ---
         if 'Ngày chốt' in df.columns:
-            def convert_to_date_strict(val):
-                # 1. Nếu là rỗng, nan, None -> Trả về None
-                if pd.isna(val) or str(val).strip() == "" or str(val).lower() in ['nan', 'nat', 'none']:
-                    return None
-                # 2. Nếu đã là datetime -> lấy date()
-                if isinstance(val, (datetime, pd.Timestamp)):
-                    return val.date()
-                # 3. Nếu đã là date -> giữ nguyên
-                if isinstance(val, date):
-                    return val
-                # 4. Nếu là chuỗi -> thử parse
-                try:
-                    return pd.to_datetime(val, dayfirst=True).date()
-                except:
-                    return None # Lỗi định dạng -> Trả về None (để không bị crash app)
-
-            # Áp dụng hàm convert cho từng dòng
-            df['Ngày chốt'] = df['Ngày chốt'].apply(convert_to_date_strict)
+            # Thay thế các giá trị NaN/NaT bằng chuỗi rỗng để không bị lỗi hiển thị
+            df['Ngày chốt'] = df['Ngày chốt'].fillna("").astype(str)
+            df['Ngày chốt'] = df['Ngày chốt'].replace({'nan': '', 'None': '', 'NaT': ''})
 
         # Chuẩn hóa trạng thái
         df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
@@ -419,10 +416,6 @@ def main_ui():
         if 'STT' in df_save.columns: df_save = df_save.drop(columns=['STT'])
         if 'Tên sheet dữ liệu đích' in df_save.columns: df_save['Tên sheet dữ liệu đích'] = df_save['Tên sheet dữ liệu đích'].astype(str).str.strip()
         
-        # Convert Date về String an toàn khi lưu
-        if 'Ngày chốt' in df_save.columns: 
-            df_save['Ngày chốt'] = df_save['Ngày chốt'].apply(lambda x: x.strftime('%d/%m/%Y') if x else "")
-            
         wks.clear()
         wks.update([df_save.columns.tolist()] + df_save.fillna('').values.tolist())
         st.toast("✅ Đã lưu cấu hình!", icon="💾")
@@ -430,15 +423,20 @@ def main_ui():
     def man_scan(df):
         errs = []
         for idx, row in df.iterrows():
+            # 1. QUÉT LINK NGUỒN
             link_src = str(row.get('Link dữ liệu lấy dữ liệu', ''))
             if "docs.google.com" in link_src:
                 ok, msg = verify_access_fast(link_src, creds, role_type="view")
-                if not ok: errs.append((row.get('STT'), link_src, f"[Nguồn] {msg}"))
+                if not ok: 
+                    errs.append((row.get('STT'), link_src, f"[Nguồn] {msg}"))
 
+            # 2. QUÉT LINK ĐÍCH
             link_dst = str(row.get('Link dữ liệu đích', ''))
             if "docs.google.com" in link_dst:
                 ok, msg = verify_access_fast(link_dst, creds, role_type="edit")
-                if not ok: errs.append((row.get('STT'), link_dst, f"[Đích] {msg}"))
+                if not ok: 
+                    errs.append((row.get('STT'), link_dst, f"[Đích] {msg}"))
+                    
         return errs
 
     if 'df_config' not in st.session_state:
@@ -446,13 +444,17 @@ def main_ui():
 
     col_order = ["STT", "Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Hành động"]
     
+    # --- CONFIG LẠI DATA EDITOR (BỎ DateColumn ĐỂ HẾT LỖI) ---
     edited_df = st.data_editor(
         st.session_state['df_config'],
         column_order=col_order,
         column_config={
             "STT": st.column_config.NumberColumn("STT", disabled=True, width="small"),
             "Trạng thái": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True, width="medium"),
-            "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"),
+            
+            # QUAN TRỌNG: CHUYỂN NGÀY CHỐT THÀNH TEXT COLUMN
+            "Ngày chốt": st.column_config.TextColumn("Ngày chốt", width="medium", help="Nhập định dạng dd/mm/yyyy"),
+            
             "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"),
             "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"),
             "Hành động": st.column_config.TextColumn("Kết quả", disabled=True),
