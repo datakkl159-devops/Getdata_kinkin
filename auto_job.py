@@ -168,9 +168,12 @@ def run_auto_job():
     wks_config = sh.worksheet(SHEET_CONFIG_NAME)
     df_config = get_as_dataframe(wks_config, evaluate_formulas=True, dtype=str)
     
-    # Logic tìm dòng chạy: Trạng thái = "Chưa cập nhật"
+    # 1. Tìm dòng có Trạng thái = "Chưa cập nhật"
     rows_to_run = []
     if 'Trạng thái' in df_config.columns:
+        # Chuẩn hóa giá trị
+        df_config['Trạng thái'] = df_config['Trạng thái'].apply(lambda x: "Đã cập nhật" if str(x).strip() in ["Đã cập nhật", "Đã chốt", "TRUE"] else "Chưa cập nhật")
+        
         rows_to_run = df_config[df_config['Trạng thái'] == "Chưa cập nhật"].to_dict('records')
 
     if not rows_to_run:
@@ -212,8 +215,9 @@ def run_auto_job():
 
     msg_sum = " | ".join(final_msgs)
     if all_success:
-        # Update config -> Đã cập nhật
+        # 2. Chạy xong chuyển thành "Đã cập nhật"
         if 'Trạng thái' in df_config.columns:
+            df_config.loc[df_config['Trạng thái'] == "Chưa cập nhật", 'Hành động'] = "Đã xong (Auto)"
             df_config.loc[df_config['Trạng thái'] == "Chưa cập nhật", 'Trạng thái'] = "Đã cập nhật"
         
         wks_config.clear()
