@@ -13,7 +13,6 @@ import pytz
 from collections import defaultdict
 
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
-SHEET_LOG_NAME = "log_lanthucthi"
 SHEET_AUTO_LOG_NAME = "log_chay_auto_github"
 
 COL_LINK_SRC = "Link file nguồn"
@@ -71,6 +70,7 @@ def check_is_run_time(creds, history_sheet_id):
         return False
     except: return False
 
+# --- LOGIC XỬ LÝ DỮ LIỆU AN TOÀN (NO DROP) ---
 def fetch_single_csv_safe(row_config, token):
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
@@ -86,9 +86,8 @@ def fetch_single_csv_safe(row_config, token):
         if response.status_code == 200:
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
             
-            cols_drop = [c for c in df.columns if c in [COL_LINK_SRC, COL_LABEL_SRC, COL_MONTH_SRC]]
-            if cols_drop: df = df.drop(cols_drop)
-
+            # KHÔNG DROP CỘT CỦA FILE NGUỒN
+            # Chỉ thêm cột quản lý vào cuối
             df = df.with_columns([
                 pl.lit(link_src).cast(pl.Utf8).alias(COL_LINK_SRC),
                 pl.lit(source_label).cast(pl.Utf8).alias(COL_LABEL_SRC),
@@ -125,21 +124,22 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
             r = requests.get(export_url, headers=headers)
             if r.status_code == 200:
                 df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
-                rename_map = {}
-                for col in df_current.columns:
-                    if col.strip() in ["Link Nguồn", "Link URL nguồn"]: rename_map[col] = COL_LINK_SRC
-                if rename_map: df_current = df_current.rename(rename_map)
+                # KHÔNG RENAME CỘT Ở ĐÂY
         except: pass
 
         if not df_current.is_empty():
+            # Chỉ xóa nếu cột Link tồn tại chính xác
             if COL_LINK_SRC in df_current.columns:
                 df_keep = df_current.filter(~pl.col(COL_LINK_SRC).is_in(links_to_remove))
-            else: df_keep = df_current 
-        else: df_keep = pl.DataFrame()
+            else:
+                df_keep = df_current 
+        else:
+            df_keep = pl.DataFrame()
 
         if not df_new_updates.is_empty():
             df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
-        else: df_final = df_keep
+        else:
+            df_final = df_keep
 
         all_cols = df_final.columns
         data_cols = [c for c in all_cols if c not in [COL_LINK_SRC, COL_LABEL_SRC, COL_MONTH_SRC]]
@@ -168,12 +168,10 @@ def run_auto_job():
     wks_config = sh.worksheet(SHEET_CONFIG_NAME)
     df_config = get_as_dataframe(wks_config, evaluate_formulas=True, dtype=str)
     
-    # 1. Tìm dòng có Trạng thái = "Chưa cập nhật"
+    # Logic tìm dòng chạy: Trạng thái = "Chưa cập nhật"
     rows_to_run = []
     if 'Trạng thái' in df_config.columns:
-        # Chuẩn hóa giá trị
         df_config['Trạng thái'] = df_config['Trạng thái'].apply(lambda x: "Đã cập nhật" if str(x).strip() in ["Đã cập nhật", "Đã chốt", "TRUE"] else "Chưa cập nhật")
-        
         rows_to_run = df_config[df_config['Trạng thái'] == "Chưa cập nhật"].to_dict('records')
 
     if not rows_to_run:
@@ -215,7 +213,6 @@ def run_auto_job():
 
     msg_sum = " | ".join(final_msgs)
     if all_success:
-        # 2. Chạy xong chuyển thành "Đã cập nhật"
         if 'Trạng thái' in df_config.columns:
             df_config.loc[df_config['Trạng thái'] == "Chưa cập nhật", 'Hành động'] = "Đã xong (Auto)"
             df_config.loc[df_config['Trạng thái'] == "Chưa cập nhật", 'Trạng thái'] = "Đã cập nhật"
