@@ -24,11 +24,8 @@ def get_creds():
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT")
     if not creds_json: return None
     try:
-        # Nếu GitHub Actions bị mã hóa 2 lần, cần load 2 lần.
-        # Ở đây ta giả sử load 1 lần là ra dict.
         creds_info = json.loads(creds_json)
-        if isinstance(creds_info, str): # Nếu load xong vẫn là string, load tiếp
-             creds_info = json.loads(creds_info)
+        if isinstance(creds_info, str): creds_info = json.loads(creds_info)
         return service_account.Credentials.from_service_account_info(
             creds_info, 
             scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
@@ -167,7 +164,8 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
                     for start, end in reversed(ranges):
                         delete_reqs.append({"deleteDimension": {"range": {"sheetId": wks.id, "dimension": "ROWS", "startIndex": start - 1, "endIndex": end}}})
                     if delete_reqs:
-                        wks.batch_update({'requests': delete_reqs})
+                        # FIX: Dùng sh.batch_update
+                        sh.batch_update({'requests': delete_reqs})
                         time.sleep(1)
 
         # 2. APPEND
@@ -244,8 +242,9 @@ def run_auto_job():
                     results.append(df)
                     links_remove.append(row.get('Link dữ liệu lấy dữ liệu'))
             
-            if results:
-                df_new = pl.concat(results, how="vertical", rechunk=True)
+            if results or links_remove:
+                if results: df_new = pl.concat(results, how="vertical", rechunk=True)
+                else: df_new = pl.DataFrame()
                 success, msg = smart_update_safe(df_new, target_link, target_sheet, creds, links_remove)
                 final_msgs.append(msg)
                 if not success: all_success = False
