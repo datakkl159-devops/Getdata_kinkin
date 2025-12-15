@@ -41,7 +41,6 @@ def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
 
-    # Login qua URL
     if "auto_key" in st.query_params:
         key = st.query_params["auto_key"]
         if key in AUTHORIZED_USERS:
@@ -49,7 +48,6 @@ def check_login():
             st.session_state['current_user_id'] = AUTHORIZED_USERS[key]
             return True
 
-    # Login qua Form
     if st.session_state['logged_in']:
         if st.session_state['current_user_id'] == "Unknown": st.session_state['logged_in'] = False
         else: return True
@@ -72,7 +70,6 @@ def get_creds():
         try: creds_info = json.loads(raw_creds)
         except: return None
     else: creds_info = dict(raw_creds)
-    
     if "private_key" in creds_info: 
         creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
@@ -127,18 +124,18 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- 4. HÀM QUÉT QUYỀN ---
+# --- 4. HÀM QUÉT QUYỀN (UPDATED) ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
-    if not sheet_id: return False, "Link lỗi"
+    if not sheet_id: return False, "Link lỗi hoặc sai định dạng"
     try:
         gc = gspread.authorize(creds)
         gc.open_by_key(sheet_id)
         return True, "OK"
     except gspread.exceptions.APIError as e:
         if "403" in str(e): return False, "⛔ Chưa cấp quyền (403)"
-        return False, f"❌ Lỗi: {e}"
-    except Exception as e: return False, f"❌ Lỗi mạng: {e}"
+        return False, f"❌ Lỗi API: {e}"
+    except Exception as e: return False, f"❌ Lỗi: {e}"
 
 # --- 5. LOGIC XỬ LÝ DỮ LIỆU ---
 def fetch_single_csv_safe(row_config, token):
@@ -183,7 +180,7 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
             creds.refresh(auth_req)
             token = creds.token
 
-        # DELETE OLD
+        # DELETE
         existing_headers = []
         try: existing_headers = wks.row_values(1)
         except: pass
@@ -219,12 +216,11 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
                                 }
                             }
                         })
-                    
                     if delete_reqs:
                         sh.batch_update({'requests': delete_reqs})
                         time.sleep(1)
 
-        # APPEND NEW
+        # APPEND
         if not df_new_updates.is_empty():
             pdf = df_new_updates.to_pandas().fillna('')
             data_values = pdf.values.tolist()
@@ -294,7 +290,6 @@ def process_pipeline(rows_to_run, user_id):
             if results or links_remove:
                 if results: df_new = pl.concat(results, how="vertical", rechunk=True)
                 else: df_new = pl.DataFrame()
-                
                 success, msg = smart_update_safe(df_new, target_link, target_sheet, creds, links_remove)
                 final_messages.append(msg)
                 if not success: all_success = False
@@ -313,6 +308,10 @@ def main_ui():
     if not check_login(): return
     user_id = st.session_state['current_user_id']
     st.title(f"⚙️ Tool Quản Lý Data (User: {user_id})")
+    
+    # --- VỊ TRÍ HIỂN THỊ THÔNG BÁO LỖI NGAY TRÊN CÙNG ---
+    scan_result_placeholder = st.container()
+
     creds = get_creds()
 
     def load_conf(creds):
@@ -356,7 +355,9 @@ def main_ui():
             link = str(row.get('Link dữ liệu lấy dữ liệu', ''))
             if "docs.google.com" in link:
                 ok, msg = verify_access_fast(link, creds)
-                if not ok: errs.append(f"Dòng {row.get('STT')} (Nguồn): {msg}")
+                if not ok: 
+                    # Trả về cả STT và Link để hiển thị
+                    errs.append((row.get('STT'), link, msg))
         return errs
 
     if 'df_config' not in st.session_state:
@@ -448,14 +449,21 @@ def main_ui():
     with col_scan:
         if st.button("🔍 Quét Quyền"):
             errs = man_scan(edited_df)
-            if errs:
-                st.error(f"❌ Phát hiện {len(errs)} link chưa cấp quyền cho Bot!")
-                st.info("👉 Hãy copy Email dưới đây và cấp quyền **Editor** cho các link bị lỗi:")
-                st.code(BOT_EMAIL_DISPLAY, language="text")
-                for e in errs:
-                    st.write(e)
-            else:
-                st.toast("✅ Tất cả Link đều OK!", icon="✨")
+            
+            # --- HIỂN THỊ KẾT QUẢ Ở TRÊN CÙNG (CONTAINER ĐÃ KHAI BÁO) ---
+            with scan_result_placeholder:
+                if errs:
+                    st.error(f"❌ Phát hiện {len(errs)} link chưa cấp quyền cho Bot!")
+                    
+                    # Box copy email
+                    st.info(f"👉 Hãy copy Email dưới đây và cấp quyền **Editor** cho các link bị lỗi:")
+                    st.code(BOT_EMAIL_DISPLAY, language="text")
+                    
+                    # Danh sách link rút gọn
+                    for stt, link, msg in errs:
+                        st.markdown(f"- **Dòng {stt}**: [Bấm vào đây để mở Sheet lỗi]({link}) | Lý do: {msg}")
+                else:
+                    st.success("✅ Tuyệt vời! Tất cả Link đều đã được cấp quyền.")
 
     with col_save:
         if st.button("💾 Lưu Cấu Hình"):
