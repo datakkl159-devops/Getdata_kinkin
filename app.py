@@ -124,33 +124,32 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- 4. HÀM QUÉT QUYỀN (THÔNG BÁO CHÍNH XÁC) ---
+# --- 4. HÀM QUÉT QUYỀN (THÔNG BÁO CỐ ĐỊNH THEO CỘT) ---
 def verify_access_fast(url, creds, role_type="view"):
     """
     role_type: 'view' (cho Link Nguồn) hoặc 'edit' (cho Link Đích)
+    Nếu lỗi bất kỳ -> Trả về thông báo cố định.
     """
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi/Sai định dạng"
     
-    # Xác định thông báo lỗi dựa trên role
-    msg_no_access = ""
+    # THÔNG BÁO CỐ ĐỊNH THEO YÊU CẦU
     if role_type == "edit":
-        msg_no_access = "⛔ Cần cấp quyền: **CHỈNH SỬA (Editor)**"
+        # Link Đích -> Cần quyền Editor
+        msg_error = "⛔ Chưa cấp quyền: Cần share quyền **CHỈNH SỬA (Editor)**"
     else:
-        msg_no_access = "⛔ Cần cấp quyền: **XEM (Viewer)**"
+        # Link Nguồn -> Cần quyền Viewer
+        msg_error = "⛔ Chưa cấp quyền: Cần share quyền **XEM (Viewer)**"
 
     try:
         gc = gspread.authorize(creds)
+        # Cố gắng mở file để test
         gc.open_by_key(sheet_id) 
         return True, "OK"
-    except gspread.exceptions.SpreadsheetNotFound:
-        # Nếu không tìm thấy file -> 99% là do chưa share quyền
-        return False, msg_no_access + " (Bot không thấy file)"
-    except gspread.exceptions.APIError as e:
-        if "403" in str(e): 
-            return False, msg_no_access
-        return False, f"❌ Lỗi API: {e}"
-    except Exception as e: return False, f"❌ Lỗi khác: {e}"
+    except:
+        # Bắt TẤT CẢ các lỗi (403, 404, API Error, Lỗi mạng...)
+        # Và chỉ trả về đúng 1 câu thông báo theo yêu cầu
+        return False, msg_error
 
 # --- 5. LOGIC XỬ LÝ DỮ LIỆU ---
 def fetch_single_csv_safe(row_config, creds, token):
