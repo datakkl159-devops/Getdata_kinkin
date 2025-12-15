@@ -6,6 +6,7 @@ import io
 import concurrent.futures
 import time
 import gspread
+import json
 from gspread_dataframe import get_as_dataframe
 from datetime import datetime, timedelta
 from google.oauth2 import service_account
@@ -33,7 +34,7 @@ COL_MONTH_SRC = "Tháng chốt"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- HÀM AUTH ---
+# --- HÀM AUTH & CREDS (FIX LỖI STRING INDICES) ---
 def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
@@ -62,17 +63,33 @@ def check_login():
     return False
 
 def get_creds():
-    creds_info = dict(st.secrets["gcp_service_account"])
-    if "private_key" in creds_info: creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+    # Lấy thông tin từ secrets
+    raw_creds = st.secrets["gcp_service_account"]
+    
+    # FIX LỖI: Kiểm tra xem nó là Dict hay String
+    if isinstance(raw_creds, str):
+        try:
+            creds_info = json.loads(raw_creds)
+        except:
+            st.error("Lỗi: Secret gcp_service_account không phải JSON hợp lệ.")
+            return None
+    else:
+        # Nếu là AttrDict (Streamlit mặc định) thì chuyển về dict chuẩn
+        creds_info = dict(raw_creds)
+
+    if "private_key" in creds_info: 
+        creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+        
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def extract_id(url):
-    if url and "docs.google.com" in str(url):
+    if not isinstance(url, str): return None
+    if "docs.google.com" in url:
         try: return url.split("/d/")[1].split("/")[0]
         except: return None
     return None
 
-# --- LOCKING & LOG ---
+# --- LOCKING SYSTEM ---
 def get_system_lock(creds):
     try:
         gc = gspread.authorize(creds)
@@ -115,13 +132,18 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- CORE LOGIC MỚI: TÌM DIỆT & NỐI ĐUÔI ---
+# --- CORE LOGIC: TÌM DIỆT & CHÈN ---
 def fetch_single_csv_safe(row_config, token):
-    link_src = row_config.get('Link dữ liệu lấy dữ liệu', '')
+    # Đảm bảo row_config là dict trước khi get
+    if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config Internal"
+    
+    link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
     month_val = str(row_config.get('Tháng', ''))
     sheet_id = extract_id(link_src)
+    
     if not sheet_id: return None, sheet_id, "Link lỗi"
+    
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
     headers = {'Authorization': f'Bearer {token}'}
     try:
@@ -141,8 +163,9 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
     try:
         gc = gspread.authorize(creds)
         target_id = extract_id(target_link)
-        sh = gc.open_by_key(target_id)
+        if not target_id: return False, "Link đích lỗi"
         
+        sh = gc.open_by_key(target_id)
         real_sheet_name = str(target_sheet_name).strip()
         if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
         
@@ -156,43 +179,39 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
             creds.refresh(auth_req)
             token = creds.token
 
-        # ---------------------------------------------------------
-        # BƯỚC 1: XÓA CŨ (DELETE) - Chỉ đọc 1 cột để tìm
-        # ---------------------------------------------------------
+        # 1. DELETE OLD (Xóa các dòng có Link trùng)
         existing_headers = []
         try: existing_headers = wks.row_values(1)
         except: pass
 
         if existing_headers:
-            # Tìm vị trí cột Link Source
             try: link_col_idx = existing_headers.index(COL_LINK_SRC) + 1
             except ValueError: link_col_idx = None
             
             if link_col_idx:
-                # Chỉ lấy dữ liệu cột Link (Rất nhẹ)
                 col_values = wks.col_values(link_col_idx)
-                
-                # Tìm các dòng cần xóa
                 rows_to_delete = []
+                # Bắt đầu từ 1 (vì col_values trả về list 0-based), nhưng row Google Sheet là 1-based
                 for i, val in enumerate(col_values):
                     if val in links_to_remove:
-                        rows_to_delete.append(i + 1) # i+1 vì API dùng 1-based index
+                        rows_to_delete.append(i + 1)
                 
-                # Xóa Batch (Gộp range để gọi API 1 lần)
                 if rows_to_delete:
                     rows_to_delete.sort()
                     ranges = []
+                    # Gom nhóm các dòng liên tiếp để xóa 1 lần cho nhanh
                     start = rows_to_delete[0]
                     end = start
                     for r in rows_to_delete[1:]:
-                        if r == end + 1: end = r
+                        if r == end + 1:
+                            end = r
                         else:
                             ranges.append((start, end))
                             start = r
                             end = r
                     ranges.append((start, end))
                     
-                    # XÓA TỪ DƯỚI LÊN (Reversed) để không làm lệch index
+                    # Xóa từ dưới lên trên để không làm lệch index
                     delete_reqs = []
                     for start, end in reversed(ranges):
                         delete_reqs.append({
@@ -200,7 +219,7 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
                                 "range": {
                                     "sheetId": wks.id,
                                     "dimension": "ROWS",
-                                    "startIndex": start - 1, # 0-based
+                                    "startIndex": start - 1, # API dùng 0-based
                                     "endIndex": end # Exclusive
                                 }
                             }
@@ -208,40 +227,30 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
                     
                     if delete_reqs:
                         wks.batch_update({'requests': delete_reqs})
-                        time.sleep(1) # Nghỉ để server thở
+                        time.sleep(1)
 
-        # ---------------------------------------------------------
-        # BƯỚC 2: CHÈN MỚI (APPEND) - Nối vào cuối
-        # ---------------------------------------------------------
+        # 2. APPEND NEW (Chèn xuống cuối)
         if not df_new_updates.is_empty():
             pdf = df_new_updates.to_pandas().fillna('')
-            
-            # Sắp xếp cột chuẩn form (nếu cần thiết, hoặc để nguyên)
-            # Ở đây ta nên đảm bảo cột khớp với header hiện tại nếu có
-            # Nhưng để đơn giản và an toàn, ta cứ append theo đúng thứ tự dataframe
-            
             data_values = pdf.values.tolist()
             
-            # Nếu sheet mới tinh chưa có header -> Thêm header
+            # Nếu chưa có header thì thêm
             if not existing_headers:
                 headers = pdf.columns.tolist()
                 wks.append_row(headers)
-                existing_headers = headers
             
-            # Chia nhỏ để Append (Batch Append) - Tránh quá tải
+            # Batch Append 5000 dòng/lần
             BATCH_SIZE = 5000
             total_rows = len(data_values)
-            
             for i in range(0, total_rows, BATCH_SIZE):
                 chunk = data_values[i : i + BATCH_SIZE]
                 wks.append_rows(chunk)
                 time.sleep(1)
-                
             return True, f"Sheet '{real_sheet_name}': +{total_rows} dòng (Append)."
             
         return True, f"Sheet '{real_sheet_name}': Đã làm sạch (nếu có)."
 
-    except Exception as e: return False, str(e)
+    except Exception as e: return False, f"Lỗi Update: {str(e)}"
 
 def process_pipeline(rows_to_run, user_id):
     creds = get_creds()
@@ -272,25 +281,41 @@ def process_pipeline(rows_to_run, user_id):
             if not target_link: continue
             results = []
             links_remove = []
+            
+            # Threading tải dữ liệu
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 futures = {executor.submit(fetch_single_csv_safe, row, token): row for row in group_rows}
                 for future in concurrent.futures.as_completed(futures):
                     row = futures[future]
                     df, sid, status = future.result()
                     src_link = row.get('Link dữ liệu lấy dữ liệu', '')
-                    log_row = [time_now, str(row.get('Ngày chốt', '')), str(row.get('Tháng', '')), user_id, src_link, target_link, target_sheet, row.get('Tên sheet nguồn dữ liệu gốc', ''), status, str(df.height) if df is not None else "0"]
+                    
+                    log_row = [
+                        time_now, str(row.get('Ngày chốt', '')), str(row.get('Tháng', '')),
+                        user_id, src_link, target_link, target_sheet,
+                        row.get('Tên sheet nguồn dữ liệu gốc', ''), status,
+                        str(df.height) if df is not None else "0"
+                    ]
                     log_entries.append(log_row)
+
                     if df is not None:
                         results.append(df)
                         links_remove.append(src_link)
             
-            if results:
-                df_new = pl.concat(results, how="vertical", rechunk=True)
+            # Nếu tải thành công ít nhất 1 link thì tiến hành Update
+            if results or links_remove:
+                # Gộp kết quả
+                if results:
+                    df_new = pl.concat(results, how="vertical", rechunk=True)
+                else:
+                    df_new = pl.DataFrame()
+                
+                # Gọi hàm Xóa cũ & Chèn mới
                 success, msg = smart_update_safe(df_new, target_link, target_sheet, creds, links_remove)
                 final_messages.append(msg)
                 if not success: all_success = False
             else:
-                final_messages.append(f"Sheet '{target_sheet}': Lỗi tải data.")
+                final_messages.append(f"Sheet '{target_sheet}': Không tải được dữ liệu nào.")
                 all_success = False
                 
         history_id = st.secrets["gcp_service_account"]["history_sheet_id"]
@@ -306,28 +331,34 @@ def main_ui():
     st.title(f"⚙️ Tool Quản Lý Data (User: {user_id})")
     creds = get_creds()
 
-    # LOAD CONFIG
+    # --- LOAD CONFIG ---
     def load_conf(creds):
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df = df.dropna(how='all')
-        df = df[df['Link dữ liệu lấy dữ liệu'].str.len() > 5] 
+        # Lọc những dòng có link hợp lệ
+        df = df[df['Link dữ liệu lấy dữ liệu'].astype(str).str.len() > 5]
+        
+        # Xóa cột rác
         for col in ['Chọn', 'STT']:
             if col in df.columns: df = df.drop(columns=[col])
+            
         rename_map = {'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích', 'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc'}
         for old, new in rename_map.items():
             if old in df.columns and new not in df.columns: df = df.rename(columns={old: new})
         
-        # MAP TRẠNG THÁI
-        if 'Trạng thái' not in df.columns: df['Trạng thái'] = "Chưa chốt & đang cập nhật"
+        # Chuẩn hóa trạng thái
+        if 'Trạng thái' not in df.columns: 
+            df['Trạng thái'] = "Chưa chốt & đang cập nhật"
         else:
             df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
 
         if 'Ngày chốt' in df.columns: df['Ngày chốt'] = pd.to_datetime(df['Ngày chốt'], errors='coerce').dt.date
         for c in ['Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 'Hành động']:
             if c not in df.columns: df[c] = ""
+        
         df.insert(0, 'STT', range(1, len(df) + 1))
         return df
 
@@ -346,8 +377,9 @@ def main_ui():
     def man_scan(df):
         errs = []
         for idx, row in df.iterrows():
-            if "docs.google.com" in str(row.get('Link dữ liệu lấy dữ liệu', '')):
-                ok, msg = verify_access_fast(row['Link dữ liệu lấy dữ liệu'], creds)
+            link = str(row.get('Link dữ liệu lấy dữ liệu', ''))
+            if "docs.google.com" in link:
+                ok, msg = verify_access_fast(link, creds)
                 if not ok: errs.append(f"Dòng {row.get('STT')} (Nguồn): {msg}")
         return errs
 
@@ -387,7 +419,7 @@ def main_ui():
     with c3:
         st.write("")
         if st.button("Lưu Cài Đặt"):
-            wks_sys.update("B2", str(saved_hour)); wks_sys.update("B3", saved_freq) # Simple update
+            wks_sys.update("B2", str(saved_hour)); wks_sys.update("B3", saved_freq)
             st.toast("Đã lưu!", icon="✅")
 
     st.divider()
