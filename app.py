@@ -124,7 +124,7 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- 4. HÀM QUÉT QUYỀN (HIỂN THỊ CHI TIẾT LỖI) ---
+# --- 4. HÀM QUÉT QUYỀN (CHUẨN XÁC) ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi/Sai định dạng"
@@ -139,49 +139,73 @@ def verify_access_fast(url, creds):
         return False, f"❌ Lỗi API: {e}"
     except Exception as e: return False, f"❌ Lỗi: {e}"
 
-# --- 5. LOGIC XỬ LÝ DỮ LIỆU (ĐÃ FIX LỖI GỌI HÀM) ---
+# --- 5. LOGIC XỬ LÝ DỮ LIỆU (ĐÚNG SHEET ĐÃ CHỌN) ---
 def fetch_single_csv_safe(row_config, creds, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
+    
+    # LẤY TÊN SHEET NGUỒN (Quan trọng)
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
+    
     month_val = str(row_config.get('Tháng', ''))
     sheet_id = extract_id(link_src)
     
     if not sheet_id: return None, sheet_id, "Link lỗi"
     
-    # CÁCH 1: Tải CSV (Nhanh)
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
-    headers = {'Authorization': f'Bearer {token}'}
     df = None
     status_msg = ""
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=20)
-        if response.status_code == 200:
-            df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
-            status_msg = "Thành công (CSV)"
-    except: pass 
+    target_gid = None
 
-    # CÁCH 2: Fallback Gspread (Chắc chắn chạy được với quyền Viewer)
+    # BƯỚC 1: XÁC ĐỊNH GID CỦA SHEET CẦN LẤY
+    # Phải dùng API để tìm GID của sheet có tên `source_label`
+    try:
+        gc = gspread.authorize(creds)
+        sh_source = gc.open_by_key(sheet_id)
+        
+        if source_label:
+            # Nếu có tên sheet -> Tìm đúng sheet đó
+            try:
+                wks_source = sh_source.worksheet(source_label)
+                target_gid = wks_source.id
+            except gspread.exceptions.WorksheetNotFound:
+                return None, sheet_id, f"❌ Không tìm thấy sheet tên: '{source_label}'"
+        else:
+            # Nếu không điền tên -> Lấy sheet đầu tiên
+            wks_source = sh_source.sheet1
+            target_gid = wks_source.id
+            
+    except Exception as e:
+        return None, sheet_id, f"Lỗi truy cập file nguồn: {str(e)}"
+
+    # BƯỚC 2: TẢI DỮ LIỆU (Ưu tiên CSV với GID chuẩn)
+    if target_gid is not None:
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={target_gid}"
+        headers = {'Authorization': f'Bearer {token}'}
+        try:
+            response = requests.get(url, headers=headers, timeout=20)
+            if response.status_code == 200:
+                df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
+                status_msg = f"Thành công (CSV - Sheet: {source_label if source_label else 'Đầu tiên'})"
+        except: pass
+
+    # BƯỚC 3: FALLBACK API (Nếu CSV lỗi)
     if df is None or df.is_empty():
         try:
-            gc = gspread.authorize(creds)
-            sh_source = gc.open_by_key(sheet_id)
-            wks_source = sh_source.sheet1 
+            # Lúc này wks_source đã được xác định đúng ở Bước 1
             data = wks_source.get_all_values()
-            
             if data and len(data) > 0:
                 headers = data[0]
                 rows = data[1:]
                 if rows:
                     df = pl.DataFrame(rows, schema=headers, orient="row")
                     df = df.select(pl.all().cast(pl.Utf8))
-                    status_msg = "Thành công (API Backup)"
-                else: status_msg = "File rỗng"
-            else: status_msg = "File rỗng"     
+                    status_msg = f"Thành công (API - Sheet: {wks_source.title})"
+                else: status_msg = "Sheet rỗng"
+            else: status_msg = "Sheet rỗng"
         except Exception as e:
-            return None, sheet_id, f"Lỗi cả 2 cách: {str(e)}"
+            return None, sheet_id, f"Lỗi tải data: {str(e)}"
 
+    # CHUẨN HÓA
     if df is not None and not df.is_empty():
         df = df.with_columns([
             pl.lit(link_src).cast(pl.Utf8).alias(COL_LINK_SRC),
@@ -304,7 +328,6 @@ def process_pipeline(rows_to_run, user_id):
             results = []
             links_remove = []
             
-            # CHẠY TUẦN TỰ ĐỂ TRÁNH LỖI PICKLING VÀ ĐẢM BẢO FALLBACK CHẠY ỔN
             for row in group_rows:
                 # FIX: Truyền thêm biến 'creds' vào đây
                 df, sid, status = fetch_single_csv_safe(row, creds, token)
@@ -330,7 +353,7 @@ def process_pipeline(rows_to_run, user_id):
                 final_messages.append(msg)
                 if not success: all_success = False
             else:
-                final_messages.append(f"Sheet '{target_sheet}': Không tải được dữ liệu nguồn (Check quyền/link)")
+                final_messages.append(f"Sheet '{target_sheet}': Không tải được dữ liệu nguồn (Check quyền/link/tên sheet)")
                 all_success = False
                 
         history_id = st.secrets["gcp_service_account"]["history_sheet_id"]
