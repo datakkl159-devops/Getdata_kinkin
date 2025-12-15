@@ -138,7 +138,7 @@ def verify_access_fast(url, creds, role_type="view"):
     except:
         return False, msg_error
 
-# --- 5. LOGIC XỬ LÝ DỮ LIỆU ---
+# --- 5. LOGIC XỬ lý DỮ LIỆU ---
 def fetch_single_csv_safe(row_config, creds, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
@@ -369,11 +369,10 @@ def main_ui():
             st.stop()
             
         wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # FIX: Dùng dtype=str để tránh lỗi convert, sau đó tự xử lý ngày tháng
+        # Load tất cả dưới dạng chuỗi để tránh lỗi
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df = df.dropna(how='all')
         
-        # CLEAN COLUMN NAMES
         df.columns = [str(c).strip() for c in df.columns]
 
         for col in ['Chọn', 'STT']:
@@ -383,16 +382,16 @@ def main_ui():
         for old, new in rename_map.items():
             if old in df.columns and new not in df.columns: df = df.rename(columns={old: new})
         
-        # ENSURE COLUMNS EXIST
         req_cols = ['Trạng thái', 'Ngày chốt', 'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 'Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 'Hành động', 'Tháng']
         for c in req_cols:
             if c not in df.columns: df[c] = ""
 
-        # --- FIX TYPE ERROR: ÉP KIỂU NGÀY THÁNG ---
+        # --- FIX TYPE ERROR (QUAN TRỌNG) ---
         if 'Ngày chốt' in df.columns:
-            # Chuyển đổi an toàn: String -> Datetime -> Date
-            # dayfirst=True giúp nhận diện 15/12/2025 đúng là ngày 15
+            # Bước 1: Convert sang datetime (ép lỗi thành NaT)
             df['Ngày chốt'] = pd.to_datetime(df['Ngày chốt'], dayfirst=True, errors='coerce').dt.date
+            # Bước 2: Thay thế toàn bộ NaT/NaN bằng None (Streamlit yêu cầu None cho ô trống)
+            df['Ngày chốt'] = df['Ngày chốt'].apply(lambda x: x if pd.notnull(x) else None)
 
         # Chuẩn hóa trạng thái
         df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
