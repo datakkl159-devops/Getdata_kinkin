@@ -124,22 +124,18 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- 4. HÀM QUÉT QUYỀN (THÔNG MINH HƠN) ---
+# --- 4. HÀM QUÉT QUYỀN ---
 def verify_access_fast(url, creds, role_type="view"):
-    """
-    role_type: 'view' (cho Link Nguồn) hoặc 'edit' (cho Link Đích)
-    """
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi/Sai định dạng"
     try:
         gc = gspread.authorize(creds)
-        gc.open_by_key(sheet_id) # Thử mở file
+        gc.open_by_key(sheet_id) 
         return True, "OK"
     except gspread.exceptions.SpreadsheetNotFound:
         return False, "❌ Không tìm thấy file (Link sai hoặc file đã xóa)"
     except gspread.exceptions.APIError as e:
         if "403" in str(e): 
-            # Tùy chỉnh thông báo lỗi dựa trên loại link
             if role_type == "edit":
                 return False, "⛔ Chưa có quyền: Cần cấp quyền **CHỈNH SỬA (Editor)**"
             else:
@@ -368,7 +364,17 @@ def main_ui():
 
     def load_conf(creds):
         gc = gspread.authorize(creds)
-        sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
+        
+        # --- FIX: BẮT LỖI PERMISSION ERROR TẠI ĐÂY ---
+        try:
+            sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
+        except (PermissionError, gspread.exceptions.APIError):
+            st.error("🚨 LỖI TRẦM TRỌNG: Bot không vào được File Cấu Hình Hệ Thống!")
+            st.warning("👉 Nguyên nhân: Bạn chưa cấp quyền cho Bot vào File Google Sheet Cấu Hình (File chứa lịch sử).")
+            st.info("👉 Hãy copy Email dưới đây và Share quyền **Editor** cho File Cấu Hình:")
+            st.code(BOT_EMAIL_DISPLAY, language="text")
+            st.stop()
+            
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df = df.dropna(how='all')
@@ -458,7 +464,7 @@ def main_ui():
 
     st.divider()
     
-    # --- KHỞI TẠO GIÁ TRỊ MẶC ĐỊNH ĐỂ TRÁNH LỖI UNBOUND ---
+    # --- KHỞI TẠO GIÁ TRỊ MẶC ĐỊNH ---
     saved_hour = 8
     saved_freq = "1 ngày/1 lần"
 
@@ -472,7 +478,6 @@ def main_ui():
             if r[0] == "run_freq": saved_freq = r[1]
     except: pass
 
-    # Kiểm tra an toàn cho index
     valid_freqs = ["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"]
     if saved_freq not in valid_freqs: saved_freq = "1 ngày/1 lần"
 
@@ -484,12 +489,11 @@ def main_ui():
         st.write("")
         if st.button("Lưu Cài Đặt"):
             try:
-                # Re-authorize để đảm bảo kết nối
                 gc = gspread.authorize(creds)
                 sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
                 wks_sys = sh.worksheet("sys_config")
-                wks_sys.update("B2", str(saved_hour)) # Update ô B2 (run_hour)
-                wks_sys.update("B3", saved_freq)      # Update ô B3 (run_freq)
+                wks_sys.update("B2", str(saved_hour))
+                wks_sys.update("B3", saved_freq)
                 st.toast("Đã lưu cài đặt!", icon="✅")
             except Exception as e:
                 st.error(f"Lỗi lưu: {e}")
