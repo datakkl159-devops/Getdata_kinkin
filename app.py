@@ -8,7 +8,7 @@ import time
 import gspread
 import json
 from gspread_dataframe import get_as_dataframe
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from google.oauth2 import service_account
 import google.auth.transport.requests
 import pytz
@@ -138,7 +138,7 @@ def verify_access_fast(url, creds, role_type="view"):
     except:
         return False, msg_error
 
-# --- 5. LOGIC XỬ lý DỮ LIỆU ---
+# --- 5. LOGIC XỬ LÝ DỮ LIỆU ---
 def fetch_single_csv_safe(row_config, creds, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
@@ -369,7 +369,6 @@ def main_ui():
             st.stop()
             
         wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # Load tất cả dưới dạng chuỗi để tránh lỗi
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df = df.dropna(how='all')
         
@@ -386,12 +385,13 @@ def main_ui():
         for c in req_cols:
             if c not in df.columns: df[c] = ""
 
-        # --- FIX TYPE ERROR (QUAN TRỌNG) ---
+        # --- FIX TYPE ERROR: EP KIEU NGAY THANG ---
         if 'Ngày chốt' in df.columns:
-            # Bước 1: Convert sang datetime (ép lỗi thành NaT)
-            df['Ngày chốt'] = pd.to_datetime(df['Ngày chốt'], dayfirst=True, errors='coerce').dt.date
-            # Bước 2: Thay thế toàn bộ NaT/NaN bằng None (Streamlit yêu cầu None cho ô trống)
-            df['Ngày chốt'] = df['Ngày chốt'].apply(lambda x: x if pd.notnull(x) else None)
+            # 1. Chuyển sang datetime (lỗi thành NaT)
+            temp_dates = pd.to_datetime(df['Ngày chốt'], dayfirst=True, errors='coerce')
+            # 2. Chuyển NaT thành None, còn lại lấy .date()
+            # Dùng lambda an toàn nhất để tránh float NaN
+            df['Ngày chốt'] = temp_dates.apply(lambda x: x.date() if pd.notnull(x) else None)
 
         # Chuẩn hóa trạng thái
         df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
@@ -407,7 +407,6 @@ def main_ui():
         if 'STT' in df_save.columns: df_save = df_save.drop(columns=['STT'])
         if 'Tên sheet dữ liệu đích' in df_save.columns: df_save['Tên sheet dữ liệu đích'] = df_save['Tên sheet dữ liệu đích'].astype(str).str.strip()
         
-        # Convert Date về String để lưu lên Sheet
         if 'Ngày chốt' in df_save.columns: 
             df_save['Ngày chốt'] = df_save['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
             
