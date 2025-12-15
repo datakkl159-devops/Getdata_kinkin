@@ -157,7 +157,6 @@ def fetch_single_csv_safe(row_config, creds, token):
     target_gid = None
 
     # BƯỚC 1: XÁC ĐỊNH GID CỦA SHEET CẦN LẤY
-    # Phải dùng API để tìm GID của sheet có tên `source_label`
     try:
         gc = gspread.authorize(creds)
         sh_source = gc.open_by_key(sheet_id)
@@ -418,6 +417,15 @@ def main_ui():
 
     if 'df_config' not in st.session_state:
         with st.spinner("Đang tải..."): st.session_state['df_config'] = load_conf(creds)
+
+    # --- ĐOẠN FIX LỖI ĐƯỢC THÊM VÀO ĐÂY ---
+    target_col = "Link dữ liệu lấy dữ liệu"
+    if 'df_config' in st.session_state and st.session_state['df_config'] is not None:
+        if target_col in st.session_state['df_config'].columns:
+            st.session_state['df_config'][target_col] = st.session_state['df_config'][target_col].apply(
+                lambda x: ", ".join(map(str, x)) if isinstance(x, list) else (str(x) if pd.notna(x) else "")
+            )
+    # -------------------------------------
 
     col_order = ["STT", "Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Hành động"]
     
