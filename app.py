@@ -456,12 +456,12 @@ def main_ui():
                     st.error(f"❌ Phát hiện {len(errs)} link chưa cấp quyền cho Bot!")
                     
                     # Box copy email
-                    st.info(f"👉 Hãy copy Email dưới đây và cấp quyền **Editor** cho các link bị lỗi:")
+                    st.info(f"👉 Hãy copy Email dưới đây và cấp quyền **View** cho các link bị lỗi:")
                     st.code(BOT_EMAIL_DISPLAY, language="text")
                     
                     # Danh sách link rút gọn
                     for stt, link, msg in errs:
-                        st.markdown(f"- **Dòng {stt}**: [Bấm vào đây để mở Sheet lỗi]({link}) | Lý do: {msg}")
+                        st.markdown(f"- **Dòng {stt}**: [Bấm vào đây để mở Sheet chưa cấp quyền]({link})")
                 else:
                     st.success("✅ Tuyệt vời! Tất cả Link đều đã được cấp quyền.")
 
@@ -471,3 +471,4 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
