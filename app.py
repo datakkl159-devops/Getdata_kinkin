@@ -418,14 +418,17 @@ def main_ui():
     if 'df_config' not in st.session_state:
         with st.spinner("Đang tải..."): st.session_state['df_config'] = load_conf(creds)
 
-    # --- ĐOẠN FIX LỖI ĐƯỢC THÊM VÀO ĐÂY ---
-    target_col = "Link dữ liệu lấy dữ liệu"
+    # --- ĐOẠN FIX LỖI (CẬP NHẬT CHO CẢ 2 CỘT) ---
+    # Danh sách các cột cần đảm bảo là chuỗi
+    cols_to_fix = ["Link dữ liệu lấy dữ liệu", "Link dữ liệu đích"]
+    
     if 'df_config' in st.session_state and st.session_state['df_config'] is not None:
-        if target_col in st.session_state['df_config'].columns:
-            st.session_state['df_config'][target_col] = st.session_state['df_config'][target_col].apply(
-                lambda x: ", ".join(map(str, x)) if isinstance(x, list) else (str(x) if pd.notna(x) else "")
-            )
-    # -------------------------------------
+        for col in cols_to_fix:
+            if col in st.session_state['df_config'].columns:
+                st.session_state['df_config'][col] = st.session_state['df_config'][col].apply(
+                    lambda x: ", ".join(map(str, x)) if isinstance(x, list) else (str(x) if pd.notna(x) else "")
+                )
+    # -------------------------------------------
 
     col_order = ["STT", "Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Hành động"]
     
