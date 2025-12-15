@@ -124,8 +124,11 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- 4. HÀM QUÉT QUYỀN (CHUẨN XÁC) ---
-def verify_access_fast(url, creds):
+# --- 4. HÀM QUÉT QUYỀN (THÔNG MINH HƠN) ---
+def verify_access_fast(url, creds, role_type="view"):
+    """
+    role_type: 'view' (cho Link Nguồn) hoặc 'edit' (cho Link Đích)
+    """
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi/Sai định dạng"
     try:
@@ -135,18 +138,20 @@ def verify_access_fast(url, creds):
     except gspread.exceptions.SpreadsheetNotFound:
         return False, "❌ Không tìm thấy file (Link sai hoặc file đã xóa)"
     except gspread.exceptions.APIError as e:
-        if "403" in str(e): return False, "⛔ Chưa cấp quyền (403)"
+        if "403" in str(e): 
+            # Tùy chỉnh thông báo lỗi dựa trên loại link
+            if role_type == "edit":
+                return False, "⛔ Chưa có quyền: Cần cấp quyền **CHỈNH SỬA (Editor)**"
+            else:
+                return False, "⛔ Chưa có quyền: Cần cấp quyền **XEM (Viewer)**"
         return False, f"❌ Lỗi API: {e}"
     except Exception as e: return False, f"❌ Lỗi: {e}"
 
-# --- 5. LOGIC XỬ LÝ DỮ LIỆU (ĐÚNG SHEET ĐÃ CHỌN) ---
+# --- 5. LOGIC XỬ LÝ DỮ LIỆU ---
 def fetch_single_csv_safe(row_config, creds, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
-    
-    # LẤY TÊN SHEET NGUỒN (Quan trọng)
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
-    
     month_val = str(row_config.get('Tháng', ''))
     sheet_id = extract_id(link_src)
     
@@ -156,28 +161,23 @@ def fetch_single_csv_safe(row_config, creds, token):
     status_msg = ""
     target_gid = None
 
-    # BƯỚC 1: XÁC ĐỊNH GID CỦA SHEET CẦN LẤY
-    # Phải dùng API để tìm GID của sheet có tên `source_label`
+    # BƯỚC 1: XÁC ĐỊNH GID
     try:
         gc = gspread.authorize(creds)
         sh_source = gc.open_by_key(sheet_id)
-        
         if source_label:
-            # Nếu có tên sheet -> Tìm đúng sheet đó
             try:
                 wks_source = sh_source.worksheet(source_label)
                 target_gid = wks_source.id
             except gspread.exceptions.WorksheetNotFound:
                 return None, sheet_id, f"❌ Không tìm thấy sheet tên: '{source_label}'"
         else:
-            # Nếu không điền tên -> Lấy sheet đầu tiên
             wks_source = sh_source.sheet1
-            target_gid = wks_source.id
-            
+            target_gid = wks_source.id    
     except Exception as e:
         return None, sheet_id, f"Lỗi truy cập file nguồn: {str(e)}"
 
-    # BƯỚC 2: TẢI DỮ LIỆU (Ưu tiên CSV với GID chuẩn)
+    # BƯỚC 2: TẢI CSV
     if target_gid is not None:
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={target_gid}"
         headers = {'Authorization': f'Bearer {token}'}
@@ -188,10 +188,9 @@ def fetch_single_csv_safe(row_config, creds, token):
                 status_msg = f"Thành công (CSV - Sheet: {source_label if source_label else 'Đầu tiên'})"
         except: pass
 
-    # BƯỚC 3: FALLBACK API (Nếu CSV lỗi)
+    # BƯỚC 3: FALLBACK API
     if df is None or df.is_empty():
         try:
-            # Lúc này wks_source đã được xác định đúng ở Bước 1
             data = wks_source.get_all_values()
             if data and len(data) > 0:
                 headers = data[0]
@@ -205,7 +204,6 @@ def fetch_single_csv_safe(row_config, creds, token):
         except Exception as e:
             return None, sheet_id, f"Lỗi tải data: {str(e)}"
 
-    # CHUẨN HÓA
     if df is not None and not df.is_empty():
         df = df.with_columns([
             pl.lit(link_src).cast(pl.Utf8).alias(COL_LINK_SRC),
@@ -226,10 +224,8 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
         real_sheet_name = str(target_sheet_name).strip()
         if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
         
-        # --- LOGIC TẠO SHEET HOẶC MỞ SHEET ---
         try: wks = sh.worksheet(real_sheet_name)
         except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
-        # -------------------------------------
         
         token = creds.token 
         if not token:
@@ -238,7 +234,7 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
             creds.refresh(auth_req)
             token = creds.token
 
-        # DELETE OLD DATA
+        # DELETE
         existing_headers = []
         try: existing_headers = wks.row_values(1)
         except: pass
@@ -278,7 +274,7 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
                         sh.batch_update({'requests': delete_reqs})
                         time.sleep(1)
 
-        # APPEND NEW DATA
+        # APPEND
         if not df_new_updates.is_empty():
             pdf = df_new_updates.to_pandas().fillna('')
             data_values = pdf.values.tolist()
@@ -329,7 +325,6 @@ def process_pipeline(rows_to_run, user_id):
             links_remove = []
             
             for row in group_rows:
-                # FIX: Truyền thêm biến 'creds' vào đây
                 df, sid, status = fetch_single_csv_safe(row, creds, token)
                 
                 src_link = row.get('Link dữ liệu lấy dữ liệu', '')
@@ -409,11 +404,20 @@ def main_ui():
     def man_scan(df):
         errs = []
         for idx, row in df.iterrows():
-            link = str(row.get('Link dữ liệu lấy dữ liệu', ''))
-            if "docs.google.com" in link:
-                ok, msg = verify_access_fast(link, creds)
+            # 1. QUÉT LINK NGUỒN (Chỉ cần Viewer)
+            link_src = str(row.get('Link dữ liệu lấy dữ liệu', ''))
+            if "docs.google.com" in link_src:
+                ok, msg = verify_access_fast(link_src, creds, role_type="view")
                 if not ok: 
-                    errs.append((row.get('STT'), link, msg))
+                    errs.append((row.get('STT'), link_src, f"[Nguồn] {msg}"))
+
+            # 2. QUÉT LINK ĐÍCH (Cần Editor)
+            link_dst = str(row.get('Link dữ liệu đích', ''))
+            if "docs.google.com" in link_dst:
+                ok, msg = verify_access_fast(link_dst, creds, role_type="edit")
+                if not ok: 
+                    errs.append((row.get('STT'), link_dst, f"[Đích] {msg}"))
+                    
         return errs
 
     if 'df_config' not in st.session_state:
@@ -508,10 +512,10 @@ def main_ui():
             with scan_result_placeholder:
                 if errs:
                     st.error(f"❌ Phát hiện {len(errs)} link chưa cấp quyền cho Bot!")
-                    st.info(f"👉 Hãy copy Email dưới đây và cấp quyền **Editor** cho các link bị lỗi:")
+                    st.info(f"👉 Hãy copy Email dưới đây và cấp quyền tương ứng cho các link bị lỗi:")
                     st.code(BOT_EMAIL_DISPLAY, language="text")
                     for stt, link, msg in errs:
-                        st.markdown(f"- **Dòng {stt}**: [Bấm vào đây để mở Sheet lỗi]({link}) | Lý do: {msg}")
+                        st.markdown(f"- **Dòng {stt}**: [Bấm vào đây để mở Sheet lỗi]({link}) | **{msg}**")
                 else:
                     st.success("✅ Tuyệt vời! Tất cả Link đều đã được cấp quyền.")
 
