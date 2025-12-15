@@ -74,29 +74,39 @@ def load_history_config(creds):
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         
+        # Xóa dòng trống
         df = df.dropna(how='all')
         df = df[df['Link dữ liệu lấy dữ liệu'].str.len() > 5] 
-        
-        # Đổi tên cột cũ sang mới nếu cần
+
+        # Xóa cột Checkbox cũ (nếu có)
+        if 'Chọn' in df.columns: df = df.drop(columns=['Chọn'])
+
+        # Đổi tên cột logic cũ sang mới
         rename_map = {
             'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích',
             'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc',
-            'Trạng thái': 'Chọn'
         }
         for old, new in rename_map.items():
             if old in df.columns and new not in df.columns:
                 df = df.rename(columns={old: new})
 
-        if 'Chọn' in df.columns:
-            df['Chọn'] = df['Chọn'].apply(lambda x: True if str(x).upper() == "TRUE" else False)
+        # Xử lý cột Trạng thái (Dropdown)
+        if 'Trạng thái' not in df.columns:
+            df['Trạng thái'] = "Chưa cập nhật"
         else:
-            df['Chọn'] = False
-            
+            # Chuẩn hóa giá trị về 2 loại: "Chưa cập nhật" hoặc "Đã cập nhật"
+            df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã cập nhật" if str(x).strip() == "Đã cập nhật" or str(x).strip() == "Đã chốt" else "Chưa cập nhật")
+
         if 'Ngày chốt' in df.columns:
             df['Ngày chốt'] = pd.to_datetime(df['Ngày chốt'], errors='coerce').dt.date
 
+        # Đảm bảo cột tồn tại
         if 'Tên sheet dữ liệu đích' not in df.columns: df['Tên sheet dữ liệu đích'] = ""
         if 'Tên sheet nguồn dữ liệu gốc' not in df.columns: df['Tên sheet nguồn dữ liệu gốc'] = ""
+
+        # --- TẠO CỘT STT TỰ ĐỘNG Ở ĐẦU ---
+        if 'STT' in df.columns: df = df.drop(columns=['STT'])
+        df.insert(0, 'STT', range(1, len(df) + 1))
 
         return df
     except: return None
@@ -108,13 +118,14 @@ def save_history_config(df_ui, creds):
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         
         df_save = df_ui.copy()
-        # Chuẩn hóa string trước khi lưu để đẹp data
+        
+        # Bỏ cột STT trước khi lưu (để lần sau load lại tự đánh số mới)
+        if 'STT' in df_save.columns: df_save = df_save.drop(columns=['STT'])
+        
+        # Trim space
         if 'Tên sheet dữ liệu đích' in df_save.columns:
             df_save['Tên sheet dữ liệu đích'] = df_save['Tên sheet dữ liệu đích'].astype(str).str.strip()
 
-        if 'Chọn' in df_save.columns:
-            df_save['Chọn'] = df_save['Chọn'].apply(lambda x: "TRUE" if x else "FALSE")
-            
         if 'Ngày chốt' in df_save.columns:
             df_save['Ngày chốt'] = df_save['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
 
@@ -123,10 +134,9 @@ def save_history_config(df_ui, creds):
         st.toast("✅ Đã lưu cấu hình!", icon="💾")
     except Exception as e: st.error(f"Lỗi lưu: {e}")
 
-# --- CORE LOGIC ---
+# --- CORE LOGIC (v6.1) ---
 def fetch_single_csv_safe(row_config, token):
     link_src = row_config.get('Link dữ liệu lấy dữ liệu', '')
-    # Cắt khoảng trắng tên nguồn
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
     month_val = str(row_config.get('Tháng', ''))
     sheet_id = extract_id(link_src)
@@ -158,16 +168,11 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
         target_id = extract_id(target_link)
         sh = gc.open_by_key(target_id)
         
-        # 1. XỬ LÝ TÊN SHEET ĐÍCH (TRIM SPACE)
         real_sheet_name = str(target_sheet_name).strip()
-        if not real_sheet_name: real_sheet_name = "Tong_Hop_Data" # Mặc định nếu để trống
+        if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
         
-        # 2. TẠO SHEET NẾU CHƯA CÓ
-        try: 
-            wks = sh.worksheet(real_sheet_name)
-        except: 
-            # Nếu chưa có thì tạo mới
-            wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
+        try: wks = sh.worksheet(real_sheet_name)
+        except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
         
         token = creds.token 
         if not token:
@@ -175,7 +180,6 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
             creds.refresh(auth_req)
             token = creds.token
 
-        # 3. ĐỌC DỮ LIỆU CŨ (NẾU CÓ)
         export_url = f"https://docs.google.com/spreadsheets/d/{target_id}/export?format=csv&gid={wks.id}"
         headers = {'Authorization': f'Bearer {token}'}
         
@@ -184,38 +188,28 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
             r = requests.get(export_url, headers=headers)
             if r.status_code == 200:
                 df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
+                rename_map = {}
+                for col in df_current.columns:
+                    if col.strip() in ["Link Nguồn", "Link URL nguồn"]: rename_map[col] = COL_LINK_SRC
+                if rename_map: df_current = df_current.rename(rename_map)
         except: pass
 
-        # 4. GIỮ LẠI DỮ LIỆU CỦA LINK KHÁC (ĐỂ VIẾT TIẾP XUỐNG DƯỚI)
         if not df_current.is_empty():
-            rename_map = {}
-            for col in df_current.columns:
-                if col.strip() in ["Link Nguồn", "Link URL nguồn"]: rename_map[col] = COL_LINK_SRC
-            if rename_map: df_current = df_current.rename(rename_map)
-
             if COL_LINK_SRC in df_current.columns:
-                # Chỉ xóa những dòng thuộc về Link đang cập nhật (để thay bằng bản mới)
-                # Giữ nguyên các dòng khác
                 df_keep = df_current.filter(~pl.col(COL_LINK_SRC).is_in(links_to_remove))
-            else:
-                df_keep = df_current
-        else:
-            df_keep = pl.DataFrame()
+            else: df_keep = df_current 
+        else: df_keep = pl.DataFrame()
 
-        # 5. GỘP (APPEND)
         if not df_new_updates.is_empty():
             df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
-        else:
-            df_final = df_keep
+        else: df_final = df_keep
 
-        # 6. SẮP XẾP CỘT
         all_cols = df_final.columns
         data_cols = [c for c in all_cols if c not in [COL_LINK_SRC, COL_LABEL_SRC, COL_MONTH_SRC]]
         final_order = data_cols + [COL_LINK_SRC, COL_LABEL_SRC, COL_MONTH_SRC]
         final_cols = [c for c in final_order if c in df_final.columns]
         df_final = df_final.select(final_cols)
 
-        # 7. GHI LẠI
         pdf = df_final.to_pandas().fillna('')
         data_values = pdf.values.tolist()
         wks.clear()
@@ -230,23 +224,18 @@ def process_pipeline(rows_to_run, user_id):
     creds.refresh(auth_req)
     token = creds.token
     
-    # GOM NHÓM: Xử lý khoảng trắng ngay khi gom nhóm
     grouped_tasks = defaultdict(list)
     for row in rows_to_run:
         t_link = row.get('Link dữ liệu đích', '')
-        # Cắt khoảng trắng tên sheet đích để gom nhóm chính xác
         t_sheet = str(row.get('Tên sheet dữ liệu đích', '')).strip()
         if not t_sheet: t_sheet = "Tong_Hop_Data"
-        
-        key = (t_link, t_sheet)
-        grouped_tasks[key].append(row)
+        grouped_tasks[(t_link, t_sheet)].append(row)
 
     final_messages = []
     all_success = True
 
     for (target_link, target_sheet), group_rows in grouped_tasks.items():
         if not target_link: continue
-        
         results = []
         links_remove = []
         
@@ -280,35 +269,36 @@ def main_ui():
         with st.spinner("Đang tải..."):
             st.session_state['df_config'] = load_history_config(creds)
 
-    col_order = ["Chọn", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Hành động"]
+    # 1. BẢNG ĐIỀU KHIỂN CHUẨN (STT Tự động, Trạng thái Dropdown)
+    col_order = ["STT", "Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc"]
     
     edited_df = st.data_editor(
         st.session_state['df_config'],
         column_order=col_order,
         column_config={
-            "Chọn": st.column_config.CheckboxColumn("Chọn", width="small"),
+            "STT": st.column_config.NumberColumn("STT", disabled=True, width="small"),
+            "Trạng thái": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa cập nhật", "Đã cập nhật"], required=True, width="small"),
             "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"),
-            "Hành động": st.column_config.TextColumn("Hành động", disabled=True),
-            "Tên sheet dữ liệu đích": st.column_config.TextColumn("Tên sheet dữ liệu đích", help="Tự động tạo sheet nếu chưa có"),
+            "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"),
+            "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"),
+            "Tên sheet dữ liệu đích": st.column_config.TextColumn("Tên sheet đích", help="Tự tạo nếu chưa có"),
         },
         use_container_width=True,
         hide_index=True,
         key="editor"
     )
 
+    # Cập nhật lại STT nếu có thay đổi dòng (thêm/xóa)
     if not edited_df.equals(st.session_state['df_config']):
-        for idx, row in edited_df.iterrows():
-            if row['Chọn']: edited_df.at[idx, 'Hành động'] = "Sẽ chạy"
-            else: edited_df.at[idx, 'Hành động'] = ""
+        # Tự động đánh lại STT
+        edited_df = edited_df.reset_index(drop=True)
+        edited_df['STT'] = range(1, len(edited_df) + 1)
         st.session_state['df_config'] = edited_df
         st.rerun()
 
     st.divider()
-    # ... (Phần Cài đặt lịch giữ nguyên code cũ, vì không đổi logic) ...
-    # Để code gọn, tôi giữ phần Cài đặt lịch và Nút chạy như bản v6.0
-    # Vì logic ở trên đã xử lý phần process_pipeline rồi.
-    
-    # 2. CÀI ĐẶT LỊCH CHẠY
+
+    # 2. CÀI ĐẶT LỊCH CHẠY (Giữ nguyên)
     st.subheader("⏰ Cài Đặt Tự Động")
     try:
         gc = gspread.authorize(creds)
@@ -338,31 +328,33 @@ def main_ui():
             try:
                 cell_h = wks_sys.find("run_hour")
                 if cell_h: wks_sys.update_cell(cell_h.row, cell_h.col + 1, str(new_hour))
-                else: wks_sys.append_row(["run_hour", str(new_hour)])
                 
                 cell_f = wks_sys.find("run_freq")
                 if cell_f: wks_sys.update_cell(cell_f.row, cell_f.col + 1, str(new_freq))
-                else: wks_sys.append_row(["run_freq", str(new_freq)])
                 st.toast("Đã lưu!", icon="✅")
             except: st.error("Lỗi lưu")
 
     st.divider()
 
+    # 3. NÚT CHẠY TAY
     col_run, col_save = st.columns([4, 1])
     with col_run:
-        if st.button("▶️ CHẠY NGAY (Dòng được chọn)", type="primary"):
-            rows_run = edited_df[edited_df['Chọn'] == True].to_dict('records')
+        if st.button("▶️ CẬP NHẬT DỮ LIỆU (Chưa cập nhật)", type="primary"):
+            # Lọc những dòng có trạng thái "Chưa cập nhật"
+            rows_run = edited_df[edited_df['Trạng thái'] == "Chưa cập nhật"].to_dict('records')
+            
             if not rows_run:
-                st.warning("Chưa chọn dòng nào!")
+                st.warning("⚠️ Không có dòng nào 'Chưa cập nhật'.")
             else:
-                with st.status("Đang xử lý...", expanded=True):
+                with st.status(f"Đang xử lý {len(rows_run)} nguồn...", expanded=True):
                     success, msg = process_pipeline(rows_run, user_id)
                     if success:
                         st.success(f"Kết quả: {msg}")
+                        # Cập nhật lại trạng thái thành "Đã cập nhật"
                         for idx, row in edited_df.iterrows():
-                            if row['Chọn']:
-                                edited_df.at[idx, 'Chọn'] = False
-                                edited_df.at[idx, 'Hành động'] = "Đã xong"
+                            if row['Trạng thái'] == "Chưa cập nhật":
+                                edited_df.at[idx, 'Trạng thái'] = "Đã cập nhật"
+                        
                         save_history_config(edited_df, creds)
                         st.session_state['df_config'] = edited_df
                         time.sleep(1)
