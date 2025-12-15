@@ -35,10 +35,8 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapi
 
 # --- HÀM AUTH ---
 def check_login():
-    if 'logged_in' not in st.session_state:
-        st.session_state['logged_in'] = False
-    if 'current_user_id' not in st.session_state:
-        st.session_state['current_user_id'] = "Unknown"
+    if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
+    if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
 
     if "auto_key" in st.query_params:
         key = st.query_params["auto_key"]
@@ -48,14 +46,11 @@ def check_login():
             return True
 
     if st.session_state['logged_in']:
-        if st.session_state['current_user_id'] == "Unknown":
-            st.session_state['logged_in'] = False
-        else:
-            return True
+        if st.session_state['current_user_id'] == "Unknown": st.session_state['logged_in'] = False
+        else: return True
 
     st.header("🔒 Đăng nhập hệ thống")
     pwd = st.text_input("Nhập mật khẩu truy cập:", type="password")
-    
     if st.button("Đăng Nhập"):
         if pwd in AUTHORIZED_USERS:
             st.session_state['logged_in'] = True
@@ -63,14 +58,12 @@ def check_login():
             st.toast(f"Xin chào {AUTHORIZED_USERS[pwd]}!", icon="👋")
             time.sleep(0.5)
             st.rerun()
-        else: 
-            st.error("Mật khẩu không đúng!")
+        else: st.error("Mật khẩu không đúng!")
     return False
 
 def get_creds():
     creds_info = dict(st.secrets["gcp_service_account"])
-    if "private_key" in creds_info:
-        creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+    if "private_key" in creds_info: creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def extract_id(url):
@@ -79,7 +72,7 @@ def extract_id(url):
         except: return None
     return None
 
-# --- LOCKING SYSTEM ---
+# --- LOCKING & LOG ---
 def get_system_lock(creds):
     try:
         gc = gspread.authorize(creds)
@@ -89,16 +82,12 @@ def get_system_lock(creds):
             wks = sh.add_worksheet(SHEET_LOCK_NAME, rows=10, cols=5)
             wks.update([["is_locked", "user", "time_start"], ["FALSE", "", ""]])
             return False, "", ""
-        
         val = wks.cell(2, 1).value
         user = wks.cell(2, 2).value
         time_str = wks.cell(2, 3).value
-        
         if val == "TRUE":
             try:
-                lock_time = datetime.strptime(time_str, "%d/%m/%Y %H:%M:%S")
-                diff = datetime.now() - lock_time
-                if diff.total_seconds() > 1800: return False, "", ""
+                if (datetime.now() - datetime.strptime(time_str, "%d/%m/%Y %H:%M:%S")).total_seconds() > 1800: return False, "", ""
             except: pass
             return True, user, time_str
         return False, "", ""
@@ -110,13 +99,10 @@ def set_system_lock(creds, user_id, lock=True):
         sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
         try: wks = sh.worksheet(SHEET_LOCK_NAME)
         except: wks = sh.add_worksheet(SHEET_LOCK_NAME, rows=10, cols=5)
-        
         now_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        if lock: wks.update("A2:C2", [["TRUE", user_id, now_str]])
-        else: wks.update("A2:C2", [["FALSE", "", ""]])
+        wks.update("A2:C2", [["TRUE", user_id, now_str]] if lock else [["FALSE", "", ""]])
     except: pass
 
-# --- LOG CHI TIẾT ---
 def write_detailed_log(creds, history_sheet_id, log_data_list):
     if not log_data_list: return
     try:
@@ -125,88 +111,11 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         try: wks = sh.worksheet(SHEET_LOG_NAME)
         except: 
             wks = sh.add_worksheet(SHEET_LOG_NAME, rows=1000, cols=10)
-            headers = ["Ngày & giờ get dữ liệu", "Ngày chốt", "Tháng", "Nhân sự get", "Link nguồn", "Link đích", "Sheet Đích", "Sheet nguồn lấy dữ liệu", "Trạng Thái", "Số Dòng Đã Lấy"]
-            wks.append_row(headers)
+            wks.append_row(["Ngày & giờ get dữ liệu", "Ngày chốt", "Tháng", "Nhân sự get", "Link nguồn", "Link đích", "Sheet Đích", "Sheet nguồn lấy dữ liệu", "Trạng Thái", "Số Dòng Đã Lấy"])
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- CONFIG (UPDATE TÊN TRẠNG THÁI) ---
-def load_history_config(creds):
-    try:
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
-        wks = sh.worksheet(SHEET_CONFIG_NAME)
-        df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
-        df = df.dropna(how='all')
-        df = df[df['Link dữ liệu lấy dữ liệu'].str.len() > 5] 
-        for col in ['Chọn', 'STT']:
-            if col in df.columns: df = df.drop(columns=[col])
-        rename_map = {'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích', 'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc'}
-        for old, new in rename_map.items():
-            if old in df.columns and new not in df.columns: df = df.rename(columns={old: new})
-        
-        # --- LOGIC MỚI: CHUYỂN ĐỔI TÊN CŨ SANG TÊN MỚI ---
-        if 'Trạng thái' not in df.columns: 
-            df['Trạng thái'] = "Chưa chốt & đang cập nhật"
-        else:
-            # Map giá trị cũ sang mới
-            def normalize_status(val):
-                val_str = str(val).strip()
-                if val_str in ["Đã chốt", "Đã cập nhật", "TRUE"]:
-                    return "Đã chốt"
-                return "Chưa chốt & đang cập nhật"
-            
-            df['Trạng thái'] = df['Trạng thái'].apply(normalize_status)
-
-        if 'Ngày chốt' in df.columns: df['Ngày chốt'] = pd.to_datetime(df['Ngày chốt'], errors='coerce').dt.date
-        for c in ['Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 'Hành động']:
-            if c not in df.columns: df[c] = ""
-        df.insert(0, 'STT', range(1, len(df) + 1))
-        return df
-    except: return None
-
-def save_history_config(df_ui, creds):
-    try:
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
-        wks = sh.worksheet(SHEET_CONFIG_NAME)
-        df_save = df_ui.copy()
-        if 'STT' in df_save.columns: df_save = df_save.drop(columns=['STT'])
-        if 'Tên sheet dữ liệu đích' in df_save.columns: df_save['Tên sheet dữ liệu đích'] = df_save['Tên sheet dữ liệu đích'].astype(str).str.strip()
-        if 'Ngày chốt' in df_save.columns: df_save['Ngày chốt'] = df_save['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
-        wks.clear()
-        wks.update([df_save.columns.tolist()] + df_save.fillna('').values.tolist())
-        st.toast("✅ Đã lưu cấu hình!", icon="💾")
-    except Exception as e: st.error(f"Lỗi lưu: {e}")
-
-def verify_access_fast(url, creds):
-    sheet_id = extract_id(url)
-    if not sheet_id: return False, "Link lỗi"
-    try:
-        gc = gspread.authorize(creds)
-        gc.open_by_key(sheet_id)
-        return True, "OK"
-    except gspread.exceptions.APIError as e:
-        if "403" in str(e): return False, "⛔ Chưa cấp quyền (403)"
-        return False, f"❌ Lỗi: {e}"
-    except Exception as e: return False, f"❌ Lỗi mạng: {e}"
-
-def manual_scan(df):
-    creds = get_creds()
-    errors = []
-    with st.spinner("Đang quét..."):
-        for idx, row in df.iterrows():
-            link_src = row.get('Link dữ liệu lấy dữ liệu', '')
-            link_dst = row.get('Link dữ liệu đích', '')
-            if link_src and "docs.google.com" in str(link_src):
-                ok, msg = verify_access_fast(link_src, creds)
-                if not ok: errors.append(f"Dòng {row.get('STT', idx+1)} (Nguồn): {msg}")
-            if link_dst and "docs.google.com" in str(link_dst):
-                ok, msg = verify_access_fast(link_dst, creds)
-                if not ok: errors.append(f"Dòng {row.get('STT', idx+1)} (Đích): {msg}")
-    return errors
-
-# --- CORE LOGIC ---
+# --- CORE LOGIC MỚI: TÌM DIỆT & NỐI ĐUÔI ---
 def fetch_single_csv_safe(row_config, token):
     link_src = row_config.get('Link dữ liệu lấy dữ liệu', '')
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
@@ -233,45 +142,105 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
         gc = gspread.authorize(creds)
         target_id = extract_id(target_link)
         sh = gc.open_by_key(target_id)
+        
         real_sheet_name = str(target_sheet_name).strip()
         if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
+        
         try: wks = sh.worksheet(real_sheet_name)
         except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
+        
         token = creds.token 
         if not token:
             import google.auth.transport.requests
             auth_req = google.auth.transport.requests.Request()
             creds.refresh(auth_req)
             token = creds.token
-        export_url = f"https://docs.google.com/spreadsheets/d/{target_id}/export?format=csv&gid={wks.id}"
-        headers = {'Authorization': f'Bearer {token}'}
-        df_current = pl.DataFrame()
-        try:
-            r = requests.get(export_url, headers=headers)
-            if r.status_code == 200:
-                df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
+
+        # ---------------------------------------------------------
+        # BƯỚC 1: XÓA CŨ (DELETE) - Chỉ đọc 1 cột để tìm
+        # ---------------------------------------------------------
+        existing_headers = []
+        try: existing_headers = wks.row_values(1)
         except: pass
 
-        if not df_current.is_empty():
-            if COL_LINK_SRC in df_current.columns:
-                df_keep = df_current.filter(~pl.col(COL_LINK_SRC).is_in(links_to_remove))
-            else: df_keep = df_current 
-        else: df_keep = pl.DataFrame()
+        if existing_headers:
+            # Tìm vị trí cột Link Source
+            try: link_col_idx = existing_headers.index(COL_LINK_SRC) + 1
+            except ValueError: link_col_idx = None
+            
+            if link_col_idx:
+                # Chỉ lấy dữ liệu cột Link (Rất nhẹ)
+                col_values = wks.col_values(link_col_idx)
+                
+                # Tìm các dòng cần xóa
+                rows_to_delete = []
+                for i, val in enumerate(col_values):
+                    if val in links_to_remove:
+                        rows_to_delete.append(i + 1) # i+1 vì API dùng 1-based index
+                
+                # Xóa Batch (Gộp range để gọi API 1 lần)
+                if rows_to_delete:
+                    rows_to_delete.sort()
+                    ranges = []
+                    start = rows_to_delete[0]
+                    end = start
+                    for r in rows_to_delete[1:]:
+                        if r == end + 1: end = r
+                        else:
+                            ranges.append((start, end))
+                            start = r
+                            end = r
+                    ranges.append((start, end))
+                    
+                    # XÓA TỪ DƯỚI LÊN (Reversed) để không làm lệch index
+                    delete_reqs = []
+                    for start, end in reversed(ranges):
+                        delete_reqs.append({
+                            "deleteDimension": {
+                                "range": {
+                                    "sheetId": wks.id,
+                                    "dimension": "ROWS",
+                                    "startIndex": start - 1, # 0-based
+                                    "endIndex": end # Exclusive
+                                }
+                            }
+                        })
+                    
+                    if delete_reqs:
+                        wks.batch_update({'requests': delete_reqs})
+                        time.sleep(1) # Nghỉ để server thở
 
+        # ---------------------------------------------------------
+        # BƯỚC 2: CHÈN MỚI (APPEND) - Nối vào cuối
+        # ---------------------------------------------------------
         if not df_new_updates.is_empty():
-            df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
-        else: df_final = df_keep
+            pdf = df_new_updates.to_pandas().fillna('')
+            
+            # Sắp xếp cột chuẩn form (nếu cần thiết, hoặc để nguyên)
+            # Ở đây ta nên đảm bảo cột khớp với header hiện tại nếu có
+            # Nhưng để đơn giản và an toàn, ta cứ append theo đúng thứ tự dataframe
+            
+            data_values = pdf.values.tolist()
+            
+            # Nếu sheet mới tinh chưa có header -> Thêm header
+            if not existing_headers:
+                headers = pdf.columns.tolist()
+                wks.append_row(headers)
+                existing_headers = headers
+            
+            # Chia nhỏ để Append (Batch Append) - Tránh quá tải
+            BATCH_SIZE = 5000
+            total_rows = len(data_values)
+            
+            for i in range(0, total_rows, BATCH_SIZE):
+                chunk = data_values[i : i + BATCH_SIZE]
+                wks.append_rows(chunk)
+                time.sleep(1)
+                
+            return True, f"Sheet '{real_sheet_name}': +{total_rows} dòng (Append)."
+            
+        return True, f"Sheet '{real_sheet_name}': Đã làm sạch (nếu có)."
 
-        all_cols = df_final.columns
-        data_cols = [c for c in all_cols if c not in [COL_LINK_SRC, COL_LABEL_SRC, COL_MONTH_SRC]]
-        final_order = data_cols + [COL_LINK_SRC, COL_LABEL_SRC, COL_MONTH_SRC]
-        final_cols = [c for c in final_order if c in df_final.columns]
-        df_final = df_final.select(final_cols)
-
-        pdf = df_final.to_pandas().fillna('')
-        wks.clear()
-        wks.update([pdf.columns.tolist()] + pdf.values.tolist())
-        return True, f"Sheet '{real_sheet_name}': OK {len(pdf)} dòng."
     except Exception as e: return False, str(e)
 
 def process_pipeline(rows_to_run, user_id):
@@ -337,131 +306,123 @@ def main_ui():
     st.title(f"⚙️ Tool Quản Lý Data (User: {user_id})")
     creds = get_creds()
 
-    is_locked, locking_user, lock_time = get_system_lock(creds)
-    if is_locked and locking_user != user_id:
-        st.warning(f"⚠️ **HỆ THỐNG ĐANG BẬN!** Người dùng **{locking_user}** đang xử lý (Bắt đầu: {lock_time}).")
-        st.stop()
+    # LOAD CONFIG
+    def load_conf(creds):
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
+        wks = sh.worksheet(SHEET_CONFIG_NAME)
+        df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
+        df = df.dropna(how='all')
+        df = df[df['Link dữ liệu lấy dữ liệu'].str.len() > 5] 
+        for col in ['Chọn', 'STT']:
+            if col in df.columns: df = df.drop(columns=[col])
+        rename_map = {'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích', 'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc'}
+        for old, new in rename_map.items():
+            if old in df.columns and new not in df.columns: df = df.rename(columns={old: new})
+        
+        # MAP TRẠNG THÁI
+        if 'Trạng thái' not in df.columns: df['Trạng thái'] = "Chưa chốt & đang cập nhật"
+        else:
+            df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
+
+        if 'Ngày chốt' in df.columns: df['Ngày chốt'] = pd.to_datetime(df['Ngày chốt'], errors='coerce').dt.date
+        for c in ['Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 'Hành động']:
+            if c not in df.columns: df[c] = ""
+        df.insert(0, 'STT', range(1, len(df) + 1))
+        return df
+
+    def save_conf(df_ui, creds):
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
+        wks = sh.worksheet(SHEET_CONFIG_NAME)
+        df_save = df_ui.copy()
+        if 'STT' in df_save.columns: df_save = df_save.drop(columns=['STT'])
+        if 'Tên sheet dữ liệu đích' in df_save.columns: df_save['Tên sheet dữ liệu đích'] = df_save['Tên sheet dữ liệu đích'].astype(str).str.strip()
+        if 'Ngày chốt' in df_save.columns: df_save['Ngày chốt'] = df_save['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
+        wks.clear()
+        wks.update([df_save.columns.tolist()] + df_save.fillna('').values.tolist())
+        st.toast("✅ Đã lưu cấu hình!", icon="💾")
+
+    def man_scan(df):
+        errs = []
+        for idx, row in df.iterrows():
+            if "docs.google.com" in str(row.get('Link dữ liệu lấy dữ liệu', '')):
+                ok, msg = verify_access_fast(row['Link dữ liệu lấy dữ liệu'], creds)
+                if not ok: errs.append(f"Dòng {row.get('STT')} (Nguồn): {msg}")
+        return errs
 
     if 'df_config' not in st.session_state:
-        with st.spinner("Đang tải..."):
-            st.session_state['df_config'] = load_history_config(creds)
-
-    if 'scan_errors' in st.session_state and st.session_state['scan_errors']:
-        st.error(f"⚠️ Có {len(st.session_state['scan_errors'])} link lỗi!")
-        for err in st.session_state['scan_errors']: st.write(f"- {err}")
-        c1, c2 = st.columns([3,1])
-        with c1:
-            st.markdown(f"**👉 COPY Email Robot:**")
-            st.code(BOT_EMAIL_DISPLAY, language="text")
-        st.divider()
+        with st.spinner("Đang tải..."): st.session_state['df_config'] = load_conf(creds)
 
     col_order = ["STT", "Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Hành động"]
-    
-    edited_df = st.data_editor(
-        st.session_state['df_config'],
-        column_order=col_order,
-        column_config={
-            "STT": st.column_config.NumberColumn("STT", disabled=True, width="small"),
-            "Trạng thái": st.column_config.SelectboxColumn(
-                "Trạng thái", 
-                # CẬP NHẬT TÊN OPTION MỚI
-                options=["Chưa chốt & đang cập nhật", "Đã chốt"], 
-                required=True, 
-                width="small"
-            ),
-            "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"),
-            "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"),
-            "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"),
-            "Hành động": st.column_config.TextColumn("Kết quả", disabled=True),
-        },
-        use_container_width=True,
-        hide_index=True,
-        key="editor"
-    )
+    edited_df = st.data_editor(st.session_state['df_config'], column_order=col_order, column_config={"STT": st.column_config.NumberColumn("STT", disabled=True, width="small"), "Trạng thái": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True, width="medium"), "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"), "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"), "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"), "Hành động": st.column_config.TextColumn("Kết quả", disabled=True)}, use_container_width=True, hide_index=True, key="editor")
 
     if not edited_df.equals(st.session_state['df_config']):
         edited_df = edited_df.reset_index(drop=True)
         edited_df['STT'] = range(1, len(edited_df) + 1)
         for idx, row in edited_df.iterrows():
-            if row['Trạng thái'] == "Chưa chốt & đang cập nhật": 
-                edited_df.at[idx, 'Hành động'] = "Sẽ chạy"
-            else: 
-                edited_df.at[idx, 'Hành động'] = ""
+            if row['Trạng thái'] == "Chưa chốt & đang cập nhật": edited_df.at[idx, 'Hành động'] = "Sẽ chạy"
+            else: edited_df.at[idx, 'Hành động'] = ""
         st.session_state['df_config'] = edited_df
         st.rerun()
 
     st.divider()
-    st.subheader("⏰ Cài Đặt Tự Động")
+    
+    # SYSTEM SETTINGS
     try:
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
-        try: wks_sys = sh.worksheet("sys_config")
-        except: 
-            wks_sys = sh.add_worksheet("sys_config", rows=10, cols=5)
-            wks_sys.update([["setting_name", "value"], ["run_hour", "8"], ["run_freq", "1 ngày/1 lần"]])
+        wks_sys = sh.worksheet("sys_config")
         data_conf = wks_sys.get_all_values()
-        saved_hour = 8
-        saved_freq = "1 ngày/1 lần"
+        saved_hour = 8; saved_freq = "1 ngày/1 lần"
         for r in data_conf:
             if r[0] == "run_hour": saved_hour = int(r[1])
             if r[0] == "run_freq": saved_freq = r[1]
     except: pass
 
+    st.subheader("⏰ Cài Đặt Tự Động")
     c1, c2, c3 = st.columns(3)
     with c1: new_freq = st.selectbox("Tần suất:", ["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"], index=["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"].index(saved_freq))
     with c2: new_hour = st.slider("Giờ chạy (VN):", 0, 23, value=saved_hour)
     with c3:
         st.write("")
         if st.button("Lưu Cài Đặt"):
-            try:
-                cell_h = wks_sys.find("run_hour")
-                if cell_h: wks_sys.update_cell(cell_h.row, cell_h.col + 1, str(new_hour))
-                else: wks_sys.append_row(["run_hour", str(new_hour)])
-                cell_f = wks_sys.find("run_freq")
-                if cell_f: wks_sys.update_cell(cell_f.row, cell_f.col + 1, str(new_freq))
-                else: wks_sys.append_row(["run_freq", str(new_freq)])
-                st.toast("Đã lưu!", icon="✅")
-            except: st.error("Lỗi lưu")
+            wks_sys.update("B2", str(saved_hour)); wks_sys.update("B3", saved_freq) # Simple update
+            st.toast("Đã lưu!", icon="✅")
 
     st.divider()
     col_run, col_scan, col_save = st.columns([3, 1, 1])
     with col_run:
-        # TÌM DÒNG "Chưa chốt & đang cập nhật"
         if st.button("▶️ CẬP NHẬT DỮ LIỆU (Chưa chốt)", type="primary"):
             is_locked, locking_user, lock_time = get_system_lock(creds)
             if is_locked and locking_user != user_id:
-                st.error(f"❌ Chậm chân rồi! {locking_user} vừa chiếm quyền.")
-                st.rerun()
+                st.error(f"❌ {locking_user} đang chạy. Vui lòng đợi.")
             else:
                 rows_run = edited_df[edited_df['Trạng thái'] == "Chưa chốt & đang cập nhật"].to_dict('records')
-                if not rows_run:
-                    st.warning("⚠️ Không có dòng nào 'Chưa chốt & đang cập nhật'.")
+                if not rows_run: st.warning("⚠️ Không có dòng nào chưa chốt.")
                 else:
                     with st.status(f"Đang xử lý {len(rows_run)} nguồn...", expanded=True):
                         success, msg = process_pipeline(rows_run, user_id)
                         if success:
                             st.success(f"Kết quả: {msg}")
-                            # --- GIỮ NGUYÊN TRẠNG THÁI ---
                             for idx, row in edited_df.iterrows():
                                 if row['Trạng thái'] == "Chưa chốt & đang cập nhật":
                                     edited_df.at[idx, 'Hành động'] = "Vừa xong"
-                            save_history_config(edited_df, creds)
+                            save_conf(edited_df, creds)
                             st.session_state['df_config'] = edited_df
                             time.sleep(1)
                             st.rerun()
                         else: st.error(msg)
 
     with col_scan:
-        if st.button("🔍 Quét All Quyền"):
-            errors = manual_scan(edited_df)
-            st.session_state['scan_errors'] = errors
-            if not errors: st.toast("✅ Link OK!", icon="✨")
-            else: st.toast(f"⚠️ Phát hiện {len(errors)} link lỗi!", icon="🚨")
-            st.rerun()
+        if st.button("🔍 Quét Quyền"):
+            errs = man_scan(edited_df)
+            if errs: st.error(f"Có {len(errs)} link lỗi!"); st.write(errs)
+            else: st.toast("Link OK!", icon="✨")
 
     with col_save:
         if st.button("💾 Lưu Cấu Hình"):
-            save_history_config(edited_df, creds)
+            save_conf(edited_df, creds)
 
 if __name__ == "__main__":
     main_ui()
