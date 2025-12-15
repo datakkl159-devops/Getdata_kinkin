@@ -1,0 +1,38 @@
+name: Auto Data Update
+
+on:
+  # Lịch chạy tự động: Chạy vào phút thứ 5 của mỗi giờ (Ví dụ: 8:05, 9:05, 10:05...)
+  # Điều này giúp hệ thống luôn "tỉnh dậy" đúng giờ để so sánh với giờ bạn cài đặt.
+  schedule:
+    - cron: '5 * * * *'
+  
+  # Cho phép bấm nút chạy bằng tay trên tab Actions để kiểm tra (nếu cần)
+  workflow_dispatch:
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Bước 1: Lấy code từ kho về máy ảo
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Bước 2: Cài đặt Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      # Bước 3: Cài đặt các thư viện cần thiết
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      # Bước 4: Chạy file auto_job.py
+      # Lúc này nó sẽ lấy Key và ID từ Secret để đăng nhập
+      - name: Run Auto Job
+        env:
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          HISTORY_SHEET_ID: ${{ secrets.HISTORY_SHEET_ID }}
+        run: python auto_job.py
