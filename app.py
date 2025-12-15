@@ -124,31 +124,18 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- 4. HÀM QUÉT QUYỀN (THÔNG BÁO CỐ ĐỊNH THEO CỘT) ---
+# --- 4. HÀM QUÉT QUYỀN (THÔNG BÁO CỐ ĐỊNH) ---
 def verify_access_fast(url, creds, role_type="view"):
-    """
-    role_type: 'view' (cho Link Nguồn) hoặc 'edit' (cho Link Đích)
-    Nếu lỗi bất kỳ -> Trả về thông báo cố định.
-    """
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi/Sai định dạng"
     
-    # THÔNG BÁO CỐ ĐỊNH THEO YÊU CẦU
-    if role_type == "edit":
-        # Link Đích -> Cần quyền Editor
-        msg_error = "⛔ Chưa cấp quyền: Cần share quyền **CHỈNH SỬA (Editor)**"
-    else:
-        # Link Nguồn -> Cần quyền Viewer
-        msg_error = "⛔ Chưa cấp quyền: Cần share quyền **XEM (Viewer)**"
+    msg_error = "⛔ Chưa cấp quyền: Cần share quyền **CHỈNH SỬA (Editor)**" if role_type == "edit" else "⛔ Chưa cấp quyền: Cần share quyền **XEM (Viewer)**"
 
     try:
         gc = gspread.authorize(creds)
-        # Cố gắng mở file để test
         gc.open_by_key(sheet_id) 
         return True, "OK"
     except:
-        # Bắt TẤT CẢ các lỗi (403, 404, API Error, Lỗi mạng...)
-        # Và chỉ trả về đúng 1 câu thông báo theo yêu cầu
         return False, msg_error
 
 # --- 5. LOGIC XỬ LÝ DỮ LIỆU ---
@@ -382,21 +369,33 @@ def main_ui():
             st.stop()
             
         wks = sh.worksheet(SHEET_CONFIG_NAME)
+        # FIX: Dùng dtype=str để tránh lỗi convert, sau đó tự xử lý ngày tháng
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df = df.dropna(how='all')
         
+        # CLEAN COLUMN NAMES
+        df.columns = [str(c).strip() for c in df.columns]
+
         for col in ['Chọn', 'STT']:
             if col in df.columns: df = df.drop(columns=[col])
+            
         rename_map = {'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích', 'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc'}
         for old, new in rename_map.items():
             if old in df.columns and new not in df.columns: df = df.rename(columns={old: new})
         
-        if 'Trạng thái' not in df.columns: df['Trạng thái'] = "Chưa chốt & đang cập nhật"
-        else: df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
-        
-        if 'Ngày chốt' in df.columns: df['Ngày chốt'] = pd.to_datetime(df['Ngày chốt'], errors='coerce').dt.date
-        for c in ['Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 'Hành động']:
+        # ENSURE COLUMNS EXIST
+        req_cols = ['Trạng thái', 'Ngày chốt', 'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 'Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 'Hành động', 'Tháng']
+        for c in req_cols:
             if c not in df.columns: df[c] = ""
+
+        # --- FIX TYPE ERROR: ÉP KIỂU NGÀY THÁNG ---
+        if 'Ngày chốt' in df.columns:
+            # Chuyển đổi an toàn: String -> Datetime -> Date
+            # dayfirst=True giúp nhận diện 15/12/2025 đúng là ngày 15
+            df['Ngày chốt'] = pd.to_datetime(df['Ngày chốt'], dayfirst=True, errors='coerce').dt.date
+
+        # Chuẩn hóa trạng thái
+        df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
         
         df.insert(0, 'STT', range(1, len(df) + 1))
         return df
@@ -408,7 +407,11 @@ def main_ui():
         df_save = df_ui.copy()
         if 'STT' in df_save.columns: df_save = df_save.drop(columns=['STT'])
         if 'Tên sheet dữ liệu đích' in df_save.columns: df_save['Tên sheet dữ liệu đích'] = df_save['Tên sheet dữ liệu đích'].astype(str).str.strip()
-        if 'Ngày chốt' in df_save.columns: df_save['Ngày chốt'] = df_save['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
+        
+        # Convert Date về String để lưu lên Sheet
+        if 'Ngày chốt' in df_save.columns: 
+            df_save['Ngày chốt'] = df_save['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
+            
         wks.clear()
         wks.update([df_save.columns.tolist()] + df_save.fillna('').values.tolist())
         st.toast("✅ Đã lưu cấu hình!", icon="💾")
@@ -416,14 +419,14 @@ def main_ui():
     def man_scan(df):
         errs = []
         for idx, row in df.iterrows():
-            # 1. QUÉT LINK NGUỒN (Chỉ cần Viewer)
+            # 1. QUÉT LINK NGUỒN
             link_src = str(row.get('Link dữ liệu lấy dữ liệu', ''))
             if "docs.google.com" in link_src:
                 ok, msg = verify_access_fast(link_src, creds, role_type="view")
                 if not ok: 
                     errs.append((row.get('STT'), link_src, f"[Nguồn] {msg}"))
 
-            # 2. QUÉT LINK ĐÍCH (Cần Editor)
+            # 2. QUÉT LINK ĐÍCH
             link_dst = str(row.get('Link dữ liệu đích', ''))
             if "docs.google.com" in link_dst:
                 ok, msg = verify_access_fast(link_dst, creds, role_type="edit")
