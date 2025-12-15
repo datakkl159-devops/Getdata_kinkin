@@ -121,7 +121,7 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- CORE LOGIC (FIXED DELETE) ---
+# --- CORE LOGIC ---
 def fetch_single_csv_safe(row_config, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
@@ -150,11 +150,11 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
         target_id = extract_id(target_link)
         if not target_id: return False, "Link đích lỗi"
         
-        sh = gc.open_by_key(target_id) # <--- ĐỐI TƯỢNG SPREADSHEET
+        sh = gc.open_by_key(target_id)
         real_sheet_name = str(target_sheet_name).strip()
         if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
         
-        try: wks = sh.worksheet(real_sheet_name) # <--- ĐỐI TƯỢNG WORKSHEET
+        try: wks = sh.worksheet(real_sheet_name)
         except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
         
         token = creds.token 
@@ -202,8 +202,7 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
                         })
                     
                     if delete_reqs:
-                        # FIX LỖI Ở ĐÂY: DÙNG sh.batch_update THAY VÌ wks.batch_update
-                        sh.batch_update({'requests': delete_reqs}) 
+                        sh.batch_update({'requests': delete_reqs})
                         time.sleep(1)
 
         # 2. APPEND NEW
@@ -271,7 +270,6 @@ def process_pipeline(rows_to_run, user_id):
             if results or links_remove:
                 if results: df_new = pl.concat(results, how="vertical", rechunk=True)
                 else: df_new = pl.DataFrame()
-                
                 success, msg = smart_update_safe(df_new, target_link, target_sheet, creds, links_remove)
                 final_messages.append(msg)
                 if not success: all_success = False
@@ -298,7 +296,10 @@ def main_ui():
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df = df.dropna(how='all')
-        df = df[df['Link dữ liệu lấy dữ liệu'].astype(str).str.len() > 5]
+        
+        # --- FIX: KHÔNG LỌC LINK RỖNG NGAY VÌ ĐỂ NGƯỜI DÙNG CÒN THÊM MỚI ---
+        # Chỉ xóa các dòng hoàn toàn rỗng
+        
         for col in ['Chọn', 'STT']:
             if col in df.columns: df = df.drop(columns=[col])
         rename_map = {'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích', 'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc'}
@@ -337,14 +338,38 @@ def main_ui():
         with st.spinner("Đang tải..."): st.session_state['df_config'] = load_conf(creds)
 
     col_order = ["STT", "Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Hành động"]
-    edited_df = st.data_editor(st.session_state['df_config'], column_order=col_order, column_config={"STT": st.column_config.NumberColumn("STT", disabled=True, width="small"), "Trạng thái": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True, width="medium"), "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"), "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"), "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"), "Hành động": st.column_config.TextColumn("Kết quả", disabled=True)}, use_container_width=True, hide_index=True, key="editor")
+    
+    # --- THAY ĐỔI QUAN TRỌNG: NUM_ROWS="DYNAMIC" ---
+    edited_df = st.data_editor(
+        st.session_state['df_config'],
+        column_order=col_order,
+        column_config={
+            "STT": st.column_config.NumberColumn("STT", disabled=True, width="small"),
+            "Trạng thái": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True, width="medium"),
+            "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"),
+            "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"),
+            "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"),
+            "Hành động": st.column_config.TextColumn("Kết quả", disabled=True),
+        },
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic", # <--- CHO PHÉP THÊM/XÓA DÒNG
+        key="editor"
+    )
 
     if not edited_df.equals(st.session_state['df_config']):
         edited_df = edited_df.reset_index(drop=True)
+        # Tự động điền số STT mới
         edited_df['STT'] = range(1, len(edited_df) + 1)
+        # Tự động điền Trạng thái mặc định nếu trống
+        if 'Trạng thái' in edited_df.columns:
+            edited_df['Trạng thái'] = edited_df['Trạng thái'].fillna("Chưa chốt & đang cập nhật")
+            edited_df['Trạng thái'] = edited_df['Trạng thái'].replace("", "Chưa chốt & đang cập nhật")
+            
         for idx, row in edited_df.iterrows():
             if row['Trạng thái'] == "Chưa chốt & đang cập nhật": edited_df.at[idx, 'Hành động'] = "Sẽ chạy"
             else: edited_df.at[idx, 'Hành động'] = ""
+        
         st.session_state['df_config'] = edited_df
         st.rerun()
 
@@ -379,6 +404,9 @@ def main_ui():
                 st.error(f"❌ {locking_user} đang chạy. Vui lòng đợi.")
             else:
                 rows_run = edited_df[edited_df['Trạng thái'] == "Chưa chốt & đang cập nhật"].to_dict('records')
+                # Lọc bỏ dòng trống
+                rows_run = [r for r in rows_run if len(str(r.get('Link dữ liệu lấy dữ liệu', ''))) > 5]
+                
                 if not rows_run: st.warning("⚠️ Không có dòng nào chưa chốt.")
                 else:
                     with st.status(f"Đang xử lý {len(rows_run)} nguồn...", expanded=True):
