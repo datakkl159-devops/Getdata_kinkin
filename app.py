@@ -357,18 +357,17 @@ def main_ui():
     scan_result_placeholder = st.container()
     creds = get_creds()
 
+    # --- HÀM LOAD CẤU HÌNH VỚI LOGIC XỬ LÝ DATE NGHIÊM NGẶT ---
     def load_conf(creds):
         gc = gspread.authorize(creds)
         try:
             sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
         except (PermissionError, gspread.exceptions.APIError):
-            st.error("🚨 LỖI TRẦM TRỌNG: Bot không vào được File Cấu Hình Hệ Thống!")
-            st.warning("👉 Nguyên nhân: Bạn chưa cấp quyền cho Bot vào File Google Sheet Cấu Hình (File chứa lịch sử).")
-            st.info("👉 Hãy copy Email dưới đây và Share quyền **Editor** cho File Cấu Hình:")
-            st.code(BOT_EMAIL_DISPLAY, language="text")
+            st.error("🚨 LỖI TRẦM TRỌNG: Bot không vào được File Cấu Hình!")
             st.stop()
             
         wks = sh.worksheet(SHEET_CONFIG_NAME)
+        # Load tất cả là string để dễ xử lý
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df = df.dropna(how='all')
         
@@ -385,13 +384,26 @@ def main_ui():
         for c in req_cols:
             if c not in df.columns: df[c] = ""
 
-        # --- FIX TYPE ERROR: EP KIEU NGAY THANG ---
+        # --- ĐÂY LÀ PHẦN FIX LỖI STREAMLIT API EXCEPTION ---
         if 'Ngày chốt' in df.columns:
-            # 1. Chuyển sang datetime (lỗi thành NaT)
-            temp_dates = pd.to_datetime(df['Ngày chốt'], dayfirst=True, errors='coerce')
-            # 2. Chuyển NaT thành None, còn lại lấy .date()
-            # Dùng lambda an toàn nhất để tránh float NaN
-            df['Ngày chốt'] = temp_dates.apply(lambda x: x.date() if pd.notnull(x) else None)
+            def convert_to_date_strict(val):
+                # 1. Nếu là rỗng, nan, None -> Trả về None
+                if pd.isna(val) or str(val).strip() == "" or str(val).lower() in ['nan', 'nat', 'none']:
+                    return None
+                # 2. Nếu đã là datetime -> lấy date()
+                if isinstance(val, (datetime, pd.Timestamp)):
+                    return val.date()
+                # 3. Nếu đã là date -> giữ nguyên
+                if isinstance(val, date):
+                    return val
+                # 4. Nếu là chuỗi -> thử parse
+                try:
+                    return pd.to_datetime(val, dayfirst=True).date()
+                except:
+                    return None # Lỗi định dạng -> Trả về None (để không bị crash app)
+
+            # Áp dụng hàm convert cho từng dòng
+            df['Ngày chốt'] = df['Ngày chốt'].apply(convert_to_date_strict)
 
         # Chuẩn hóa trạng thái
         df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
@@ -407,8 +419,9 @@ def main_ui():
         if 'STT' in df_save.columns: df_save = df_save.drop(columns=['STT'])
         if 'Tên sheet dữ liệu đích' in df_save.columns: df_save['Tên sheet dữ liệu đích'] = df_save['Tên sheet dữ liệu đích'].astype(str).str.strip()
         
+        # Convert Date về String an toàn khi lưu
         if 'Ngày chốt' in df_save.columns: 
-            df_save['Ngày chốt'] = df_save['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
+            df_save['Ngày chốt'] = df_save['Ngày chốt'].apply(lambda x: x.strftime('%d/%m/%Y') if x else "")
             
         wks.clear()
         wks.update([df_save.columns.tolist()] + df_save.fillna('').values.tolist())
@@ -417,20 +430,15 @@ def main_ui():
     def man_scan(df):
         errs = []
         for idx, row in df.iterrows():
-            # 1. QUÉT LINK NGUỒN
             link_src = str(row.get('Link dữ liệu lấy dữ liệu', ''))
             if "docs.google.com" in link_src:
                 ok, msg = verify_access_fast(link_src, creds, role_type="view")
-                if not ok: 
-                    errs.append((row.get('STT'), link_src, f"[Nguồn] {msg}"))
+                if not ok: errs.append((row.get('STT'), link_src, f"[Nguồn] {msg}"))
 
-            # 2. QUÉT LINK ĐÍCH
             link_dst = str(row.get('Link dữ liệu đích', ''))
             if "docs.google.com" in link_dst:
                 ok, msg = verify_access_fast(link_dst, creds, role_type="edit")
-                if not ok: 
-                    errs.append((row.get('STT'), link_dst, f"[Đích] {msg}"))
-                    
+                if not ok: errs.append((row.get('STT'), link_dst, f"[Đích] {msg}"))
         return errs
 
     if 'df_config' not in st.session_state:
@@ -471,7 +479,6 @@ def main_ui():
 
     st.divider()
     
-    # --- KHỞI TẠO GIÁ TRỊ MẶC ĐỊNH ---
     saved_hour = 8
     saved_freq = "1 ngày/1 lần"
 
