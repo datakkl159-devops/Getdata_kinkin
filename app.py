@@ -33,17 +33,14 @@ COL_MONTH_SRC = "Tháng chốt"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- HÀM HỖ TRỢ & BẢO MẬT ---
+# --- HÀM HỖ TRỢ ---
 def check_login():
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
-    
     if "auto_key" in st.query_params:
-        key = st.query_params["auto_key"]
-        if key in AUTHORIZED_USERS:
+        if st.query_params["auto_key"] in AUTHORIZED_USERS:
             st.session_state['logged_in'] = True
             return True
-
     if not st.session_state['logged_in']:
         st.header("🔒 Đăng nhập hệ thống")
         pwd = st.text_input("Nhập mật khẩu truy cập:", type="password")
@@ -67,7 +64,7 @@ def extract_id(url):
         except: return None
     return None
 
-# --- HÀM LOAD/SAVE CẤU HÌNH ---
+# --- LOAD / SAVE CONFIG ---
 def load_history_config(creds):
     try:
         gc = gspread.authorize(creds)
@@ -75,14 +72,15 @@ def load_history_config(creds):
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         
-        # Xóa dòng trống
+        # 1. Xóa dòng trống & Link rác
         df = df.dropna(how='all')
         df = df[df['Link dữ liệu lấy dữ liệu'].str.len() > 5] 
 
-        # Xóa cột Checkbox cũ (nếu có)
-        if 'Chọn' in df.columns: df = df.drop(columns=['Chọn'])
+        # 2. Xóa cột thừa từ bản cũ
+        for col in ['Chọn', 'STT']:
+            if col in df.columns: df = df.drop(columns=[col])
 
-        # Đổi tên cột logic cũ sang mới
+        # 3. Đổi tên cột cũ (Migration)
         rename_map = {
             'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích',
             'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc',
@@ -91,24 +89,22 @@ def load_history_config(creds):
             if old in df.columns and new not in df.columns:
                 df = df.rename(columns={old: new})
 
-        # Xử lý cột Trạng thái (Dropdown)
+        # 4. Chuẩn hóa cột Trạng thái (Dropdown)
         if 'Trạng thái' not in df.columns:
             df['Trạng thái'] = "Chưa cập nhật"
         else:
-            # Chuẩn hóa giá trị về 2 loại
-            df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã cập nhật" if str(x).strip() in ["Đã cập nhật", "Đã chốt"] else "Chưa cập nhật")
+            # Chỉ cho phép 2 giá trị này
+            df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã cập nhật" if str(x).strip() in ["Đã cập nhật", "Đã chốt", "TRUE"] else "Chưa cập nhật")
 
         if 'Ngày chốt' in df.columns:
             df['Ngày chốt'] = pd.to_datetime(df['Ngày chốt'], errors='coerce').dt.date
 
-        # Đảm bảo cột tồn tại
-        if 'Tên sheet dữ liệu đích' not in df.columns: df['Tên sheet dữ liệu đích'] = ""
-        if 'Tên sheet nguồn dữ liệu gốc' not in df.columns: df['Tên sheet nguồn dữ liệu gốc'] = ""
+        # 5. Đảm bảo cột tồn tại
+        for c in ['Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 'Hành động']:
+            if c not in df.columns: df[c] = ""
 
-        # --- TẠO CỘT STT TỰ ĐỘNG ---
-        if 'STT' in df.columns: df = df.drop(columns=['STT'])
+        # 6. Tạo cột STT
         df.insert(0, 'STT', range(1, len(df) + 1))
-
         return df
     except: return None
 
@@ -119,8 +115,7 @@ def save_history_config(df_ui, creds):
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         
         df_save = df_ui.copy()
-        
-        # Bỏ cột STT trước khi lưu
+        # Bỏ STT khi lưu
         if 'STT' in df_save.columns: df_save = df_save.drop(columns=['STT'])
         
         # Trim space
@@ -135,7 +130,7 @@ def save_history_config(df_ui, creds):
         st.toast("✅ Đã lưu cấu hình!", icon="💾")
     except Exception as e: st.error(f"Lỗi lưu: {e}")
 
-# --- HÀM QUÉT QUYỀN (ĐÃ KHÔI PHỤC) ---
+# --- QUÉT QUYỀN ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link không hợp lệ"
@@ -155,19 +150,15 @@ def manual_scan(df):
         for idx, row in df.iterrows():
             link_src = row.get('Link dữ liệu lấy dữ liệu', '')
             link_dst = row.get('Link dữ liệu đích', '')
-            
-            # Quét link nguồn
             if link_src and "docs.google.com" in str(link_src):
                 ok, msg = verify_access_fast(link_src, creds)
                 if not ok: errors.append(f"Dòng {row.get('STT', idx+1)} (Nguồn): {msg}")
-            
-            # Quét link đích
             if link_dst and "docs.google.com" in str(link_dst):
                 ok, msg = verify_access_fast(link_dst, creds)
                 if not ok: errors.append(f"Dòng {row.get('STT', idx+1)} (Đích): {msg}")
     return errors
 
-# --- CORE LOGIC (XỬ LÝ DỮ LIỆU) ---
+# --- CORE LOGIC ---
 def fetch_single_csv_safe(row_config, token):
     link_src = row_config.get('Link dữ liệu lấy dữ liệu', '')
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
@@ -248,7 +239,6 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
         wks.clear()
         wks.update([pdf.columns.tolist()] + data_values)
         return True, f"Sheet '{real_sheet_name}': OK {len(pdf)} dòng."
-
     except Exception as e: return False, str(e)
 
 def process_pipeline(rows_to_run, user_id):
@@ -287,7 +277,7 @@ def process_pipeline(rows_to_run, user_id):
             final_messages.append(msg)
             if not success: all_success = False
         else:
-            final_messages.append(f"Sheet '{target_sheet}': Không có data.")
+            final_messages.append(f"Sheet '{target_sheet}': Lỗi tải data.")
             all_success = False
             
     return all_success, " | ".join(final_messages)
@@ -302,17 +292,17 @@ def main_ui():
         with st.spinner("Đang tải..."):
             st.session_state['df_config'] = load_history_config(creds)
 
-    # HIỂN THỊ LỖI QUÉT QUYỀN NẾU CÓ
+    # HIỂN THỊ LỖI QUÉT QUYỀN
     if 'scan_errors' in st.session_state and st.session_state['scan_errors']:
         st.error(f"⚠️ Có {len(st.session_state['scan_errors'])} link lỗi!")
         for err in st.session_state['scan_errors']: st.write(f"- {err}")
         c1, c2 = st.columns([3,1])
         with c1:
-            st.markdown(f"**👉 COPY Email Robot (Cấp quyền Editor):**")
+            st.markdown(f"**👉 COPY Email Robot:**")
             st.code(BOT_EMAIL_DISPLAY, language="text")
         st.divider()
 
-    # 1. BẢNG ĐIỀU KHIỂN
+    # 1. BẢNG ĐIỀU KHIỂN (DROPDOWN)
     col_order = ["STT", "Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Hành động"]
     
     edited_df = st.data_editor(
@@ -320,11 +310,16 @@ def main_ui():
         column_order=col_order,
         column_config={
             "STT": st.column_config.NumberColumn("STT", disabled=True, width="small"),
-            "Trạng thái": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa cập nhật", "Đã cập nhật"], required=True, width="small"),
+            "Trạng thái": st.column_config.SelectboxColumn(
+                "Trạng thái", 
+                options=["Chưa cập nhật", "Đã cập nhật"], # List thả xuống 2 giá trị
+                required=True, 
+                width="small"
+            ),
             "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"),
             "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"),
             "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"),
-            "Tên sheet dữ liệu đích": st.column_config.TextColumn("Tên sheet đích", help="Tự tạo nếu chưa có"),
+            "Hành động": st.column_config.TextColumn("Kết quả", disabled=True),
         },
         use_container_width=True,
         hide_index=True,
@@ -332,14 +327,23 @@ def main_ui():
     )
 
     if not edited_df.equals(st.session_state['df_config']):
+        # Reset STT
         edited_df = edited_df.reset_index(drop=True)
         edited_df['STT'] = range(1, len(edited_df) + 1)
+        
+        # Cập nhật cột thông báo Hành động dựa trên Trạng thái
+        for idx, row in edited_df.iterrows():
+            if row['Trạng thái'] == "Chưa cập nhật": 
+                edited_df.at[idx, 'Hành động'] = "Sẽ chạy"
+            else: 
+                edited_df.at[idx, 'Hành động'] = ""
+                
         st.session_state['df_config'] = edited_df
         st.rerun()
 
     st.divider()
 
-    # 2. CÀI ĐẶT LỊCH CHẠY
+    # 2. CÀI ĐẶT LỊCH
     st.subheader("⏰ Cài Đặt Tự Động")
     try:
         gc = gspread.authorize(creds)
@@ -379,10 +383,10 @@ def main_ui():
 
     st.divider()
 
-    # 3. BUTTONS (ĐÃ KHÔI PHỤC NÚT QUÉT QUYỀN)
-    col_run, col_scan, col_save = st.columns([3, 1, 1])
-    
+    # 3. NÚT CHẠY
+    col_run, col_scan, col_save = st.columns([4, 1])
     with col_run:
+        # Nút này sẽ tìm những dòng có Trạng thái = "Chưa cập nhật"
         if st.button("▶️ CẬP NHẬT DỮ LIỆU (Chưa cập nhật)", type="primary"):
             rows_run = edited_df[edited_df['Trạng thái'] == "Chưa cập nhật"].to_dict('records')
             
@@ -393,9 +397,11 @@ def main_ui():
                     success, msg = process_pipeline(rows_run, user_id)
                     if success:
                         st.success(f"Kết quả: {msg}")
+                        # Auto chuyển trạng thái sang Đã cập nhật
                         for idx, row in edited_df.iterrows():
                             if row['Trạng thái'] == "Chưa cập nhật":
                                 edited_df.at[idx, 'Trạng thái'] = "Đã cập nhật"
+                                edited_df.at[idx, 'Hành động'] = "Vừa xong"
                         
                         save_history_config(edited_df, creds)
                         st.session_state['df_config'] = edited_df
@@ -408,8 +414,8 @@ def main_ui():
         if st.button("🔍 Quét All Quyền"):
             errors = manual_scan(edited_df)
             st.session_state['scan_errors'] = errors
-            if not errors: st.toast("✅ Tất cả Link đều OK!", icon="✨")
-            else: st.toast(f"⚠️ Phát hiện {len(errors)} link lỗi!", icon="🚨")
+            if not errors: st.toast("✅ Link OK!", icon="✨")
+            else: st.toast(f"⚠️ Có {len(errors)} link lỗi!", icon="🚨")
             st.rerun()
 
     with col_save:
