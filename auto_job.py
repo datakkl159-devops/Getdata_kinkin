@@ -70,7 +70,6 @@ def check_is_run_time(creds, history_sheet_id):
         return False
     except: return False
 
-# --- LOGIC XỬ LÝ DỮ LIỆU AN TOÀN (NO DROP) ---
 def fetch_single_csv_safe(row_config, token):
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
@@ -86,8 +85,8 @@ def fetch_single_csv_safe(row_config, token):
         if response.status_code == 200:
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
             
-            # KHÔNG DROP CỘT CỦA FILE NGUỒN
-            # Chỉ thêm cột quản lý vào cuối
+            # TUYỆT ĐỐI KHÔNG DROP CỘT
+            # Chỉ nối thêm 3 cột
             df = df.with_columns([
                 pl.lit(link_src).cast(pl.Utf8).alias(COL_LINK_SRC),
                 pl.lit(source_label).cast(pl.Utf8).alias(COL_LABEL_SRC),
@@ -124,22 +123,18 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
             r = requests.get(export_url, headers=headers)
             if r.status_code == 200:
                 df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
-                # KHÔNG RENAME CỘT Ở ĐÂY
+                # KHÔNG RENAME CỘT Ở ĐÂY NỮA
         except: pass
 
         if not df_current.is_empty():
-            # Chỉ xóa nếu cột Link tồn tại chính xác
             if COL_LINK_SRC in df_current.columns:
                 df_keep = df_current.filter(~pl.col(COL_LINK_SRC).is_in(links_to_remove))
-            else:
-                df_keep = df_current 
-        else:
-            df_keep = pl.DataFrame()
+            else: df_keep = df_current 
+        else: df_keep = pl.DataFrame()
 
         if not df_new_updates.is_empty():
             df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
-        else:
-            df_final = df_keep
+        else: df_final = df_keep
 
         all_cols = df_final.columns
         data_cols = [c for c in all_cols if c not in [COL_LINK_SRC, COL_LABEL_SRC, COL_MONTH_SRC]]
@@ -168,7 +163,6 @@ def run_auto_job():
     wks_config = sh.worksheet(SHEET_CONFIG_NAME)
     df_config = get_as_dataframe(wks_config, evaluate_formulas=True, dtype=str)
     
-    # Logic tìm dòng chạy: Trạng thái = "Chưa cập nhật"
     rows_to_run = []
     if 'Trạng thái' in df_config.columns:
         df_config['Trạng thái'] = df_config['Trạng thái'].apply(lambda x: "Đã cập nhật" if str(x).strip() in ["Đã cập nhật", "Đã chốt", "TRUE"] else "Chưa cập nhật")
