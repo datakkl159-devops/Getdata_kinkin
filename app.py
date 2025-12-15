@@ -458,26 +458,41 @@ def main_ui():
 
     st.divider()
     
+    # --- KHỞI TẠO GIÁ TRỊ MẶC ĐỊNH ĐỂ TRÁNH LỖI UNBOUND ---
+    saved_hour = 8
+    saved_freq = "1 ngày/1 lần"
+
     try:
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
         wks_sys = sh.worksheet("sys_config")
         data_conf = wks_sys.get_all_values()
-        saved_hour = 8; saved_freq = "1 ngày/1 lần"
         for r in data_conf:
             if r[0] == "run_hour": saved_hour = int(r[1])
             if r[0] == "run_freq": saved_freq = r[1]
     except: pass
 
+    # Kiểm tra an toàn cho index
+    valid_freqs = ["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"]
+    if saved_freq not in valid_freqs: saved_freq = "1 ngày/1 lần"
+
     st.subheader("⏰ Cài Đặt Tự Động")
     c1, c2, c3 = st.columns(3)
-    with c1: new_freq = st.selectbox("Tần suất:", ["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"], index=["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"].index(saved_freq))
+    with c1: new_freq = st.selectbox("Tần suất:", valid_freqs, index=valid_freqs.index(saved_freq))
     with c2: new_hour = st.slider("Giờ chạy (VN):", 0, 23, value=saved_hour)
     with c3:
         st.write("")
         if st.button("Lưu Cài Đặt"):
-            wks_sys.update("B2", str(saved_hour)); wks_sys.update("B3", saved_freq)
-            st.toast("Đã lưu!", icon="✅")
+            try:
+                # Re-authorize để đảm bảo kết nối
+                gc = gspread.authorize(creds)
+                sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
+                wks_sys = sh.worksheet("sys_config")
+                wks_sys.update("B2", str(saved_hour)) # Update ô B2 (run_hour)
+                wks_sys.update("B3", saved_freq)      # Update ô B3 (run_freq)
+                st.toast("Đã lưu cài đặt!", icon="✅")
+            except Exception as e:
+                st.error(f"Lỗi lưu: {e}")
 
     st.divider()
     
