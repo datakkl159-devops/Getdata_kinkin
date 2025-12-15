@@ -25,7 +25,7 @@ BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
 SHEET_LOG_NAME = "log_lanthucthi"
 
-# --- 3 CỘT QUẢN LÝ (SẼ NẰM CUỐI CÙNG) ---
+# --- 3 CỘT QUẢN LÝ ---
 COL_LINK_SRC = "Link file nguồn"
 COL_LABEL_SRC = "Tên nguồn (Nhãn)"
 COL_MONTH_SRC = "Tháng"
@@ -99,14 +99,12 @@ def load_history_config(creds, current_user_id):
         df_user = df_all[df_all['User_ID'] == current_user_id].copy()
         if 'User_ID' in df_user.columns: df_user = df_user.drop(columns=['User_ID'])
         
-        # Xóa cột 'Chọn' nếu tồn tại từ phiên bản cũ
-        if 'Chọn' in df_user.columns:
-            df_user = df_user.drop(columns=['Chọn'])
+        # Xóa cột 'Chọn' cũ nếu có
+        if 'Chọn' in df_user.columns: df_user = df_user.drop(columns=['Chọn'])
 
         if 'Ngày chốt' in df_user.columns:
             df_user['Ngày chốt'] = pd.to_datetime(df_user['Ngày chốt'], errors='coerce').dt.date
         
-        # Logic chuẩn hóa Trạng thái
         if 'Trạng thái' in df_user.columns:
             df_user['Trạng thái'] = df_user['Trạng thái'].apply(lambda x: "Chưa chốt" if pd.isna(x) or str(x).strip() == "" else str(x))
         else:
@@ -133,7 +131,6 @@ def save_history_config(df_ui, creds, current_user_id):
         df_new = df_ui.copy()
         df_new['User_ID'] = current_user_id
         
-        # Cập nhật hành động trước khi lưu
         for idx, row in df_new.iterrows():
             if row['Trạng thái'] == "Đã chốt":
                 df_new.at[idx, 'Hành động'] = "Đã cập nhật"
@@ -195,10 +192,7 @@ def fetch_single_csv_safe(row_config, token):
     try:
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code == 200:
-            # Đọc giữ nguyên bản
             df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
-            
-            # CHỈ THÊM 3 CỘT QUẢN LÝ VÀO CUỐI
             df = df.with_columns([
                 pl.lit(link_src).cast(pl.Utf8).alias(COL_LINK_SRC),
                 pl.lit(display_label).cast(pl.Utf8).alias(COL_LABEL_SRC),
@@ -209,12 +203,6 @@ def fetch_single_csv_safe(row_config, token):
     except Exception as e: return None, sheet_id, str(e)
 
 def smart_update_by_link(df_new_updates, target_link, creds, links_to_remove):
-    """
-    LOGIC:
-    1. Đọc file đích.
-    2. Nếu có cột Link -> Xóa dòng có link trùng với list đang chạy.
-    3. Nối mới vào cuối.
-    """
     try:
         gc = gspread.authorize(creds)
         target_id = extract_id(target_link)
@@ -236,30 +224,25 @@ def smart_update_by_link(df_new_updates, target_link, creds, links_to_remove):
             r = requests.get(export_url, headers=headers)
             if r.status_code == 200:
                 df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
-                
-                # Chuẩn hóa tên cột Link để đảm bảo logic xóa hoạt động
                 rename_map = {}
                 for col in df_current.columns:
                     if col.strip() == "Link Nguồn": rename_map[col] = COL_LINK_SRC
                 if rename_map: df_current = df_current.rename(rename_map)
         except: pass
 
-        # --- XÓA CŨ (THEO LINK) ---
         if not df_current.is_empty():
             if COL_LINK_SRC in df_current.columns:
                 df_keep = df_current.filter(~pl.col(COL_LINK_SRC).is_in(links_to_remove))
             else:
-                df_keep = df_current # Chưa có cột Link -> Giữ nguyên
+                df_keep = df_current 
         else:
             df_keep = pl.DataFrame()
 
-        # --- GỘP MỚI VÀO CUỐI ---
         if not df_new_updates.is_empty():
             df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
         else:
             df_final = df_keep
 
-        # --- GHI ĐÈ ---
         pdf = df_final.to_pandas().fillna('')
         data_values = pdf.values.tolist()
         
@@ -304,7 +287,7 @@ def process_pipeline_safe(rows_to_process, user_id):
             results_map[idx] = df
             
             if df is not None:
-                links_processing.append(link_src) # Lưu link để xóa
+                links_processing.append(link_src)
 
             d_log = row.get('Ngày chốt', '')
             log_date = d_log.strftime("%d/%m/%Y") if isinstance(d_log, (datetime, pd.Timestamp)) else str(d_log)
@@ -329,7 +312,6 @@ def process_pipeline_safe(rows_to_process, user_id):
     
     if sorted_dfs:
         df_new = pl.concat(sorted_dfs, how="vertical", rechunk=True)
-        # GỌI HÀM UPDATE AN TOÀN
         success, msg = smart_update_by_link(df_new, target_link, creds, links_processing)
         final_msg = msg
     else:
@@ -344,7 +326,6 @@ def main_ui():
     user_id = st.session_state.get('current_user_id', 'Unknown')
     st.title(f"⚙️ Tool Quản Lý Data (User: {user_id})")
     
-    # 1. LOAD CONFIG
     if 'df_config' not in st.session_state:
         creds = get_creds()
         with st.spinner("⏳ Tải cấu hình..."):
@@ -365,7 +346,7 @@ def main_ui():
             data["Hành động"] = ["Xóa & Cập nhật"]
             st.session_state['df_config'] = pd.DataFrame(data)
 
-    st.info("💡 **Logic:** Xóa cũ (theo Link) -> Nối mới (Append). Giữ nguyên dữ liệu gốc.")
+    st.info("💡 **Logic:** Xóa theo Link -> Nối đuôi dữ liệu mới (Không sort). Dữ liệu gốc giữ nguyên.")
 
     if 'scan_errors' in st.session_state and st.session_state['scan_errors']:
         st.error(f"⚠️ Có {len(st.session_state['scan_errors'])} link lỗi!")
@@ -376,7 +357,6 @@ def main_ui():
             st.code(BOT_EMAIL_DISPLAY, language="text")
         st.divider()
 
-    # 2. EDITOR
     edited_df = st.data_editor(
         st.session_state['df_config'],
         num_rows="dynamic",
@@ -391,7 +371,6 @@ def main_ui():
         key="editor"
     )
 
-    # 3. AUTO LOGIC
     if not edited_df.equals(st.session_state['df_config']):
         for idx, row in edited_df.iterrows():
             if row['Trạng thái'] == "Chưa chốt": edited_df.at[idx, 'Hành động'] = "Xóa & Cập nhật"
@@ -413,9 +392,64 @@ def main_ui():
         st.session_state['df_config'] = edited_df
         st.rerun()
 
-    # 4. BUTTONS
     st.divider()
-    col_run, col_scan, col_save = st.columns([3, 1, 1])
+    
+    # --- PHẦN CÀI ĐẶT LỊCH CHẠY (3 OPTION) ---
+    st.header("⏰ Cài Đặt Lịch Chạy Tự Động")
+    
+    # Load config hiện tại
+    creds = get_creds()
+    saved_hour = 8
+    saved_freq = "1 ngày/1 lần"
+    try:
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
+        try: wks_sys = sh.worksheet("sys_config")
+        except: 
+            wks_sys = sh.add_worksheet("sys_config", rows=10, cols=5)
+            wks_sys.update([["setting_name", "value"], ["run_hour", "8"], ["run_freq", "1 ngày/1 lần"]])
+        
+        data_conf = wks_sys.get_all_values()
+        for r in data_conf:
+            if r[0] == "run_hour": saved_hour = int(r[1])
+            if r[0] == "run_freq": saved_freq = r[1]
+    except: pass
+
+    col_freq, col_time, col_save = st.columns([2, 1, 1])
+    
+    with col_freq:
+        new_freq = st.selectbox(
+            "Tần suất chạy:",
+            ["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"],
+            index=["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"].index(saved_freq) if saved_freq in ["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"] else 0
+        )
+        if new_freq == "1 ngày/1 lần": st.caption("👉 Chạy **hàng ngày**.")
+        elif new_freq == "1 tuần/1 lần": st.caption("👉 Chạy vào **Thứ Hai** hàng tuần.")
+        else: st.caption("👉 Chạy vào **ngày mùng 1** hàng tháng.")
+
+    with col_time:
+        new_hour = st.slider("Giờ chạy (0-23h VN):", 0, 23, value=saved_hour)
+
+    with col_save:
+        st.write("")
+        st.write("")
+        if st.button("Lưu Cài Đặt"):
+            try:
+                cell_h = wks_sys.find("run_hour")
+                if cell_h: wks_sys.update_cell(cell_h.row, cell_h.col + 1, str(new_hour))
+                else: wks_sys.append_row(["run_hour", str(new_hour)])
+                
+                cell_f = wks_sys.find("run_freq")
+                if cell_f: wks_sys.update_cell(cell_f.row, cell_f.col + 1, str(new_freq))
+                else: wks_sys.append_row(["run_freq", str(new_freq)])
+                
+                st.toast("✅ Đã lưu lịch chạy!", icon="💾")
+                time.sleep(1)
+                st.rerun()
+            except Exception as e: st.error(f"Lỗi: {e}")
+
+    st.divider()
+    col_run, col_scan, col_manual_save = st.columns([3, 1, 1])
     
     with col_run:
         if st.button("▶️ CẬP NHẬT DỮ LIỆU (CHƯA CHỐT)", type="primary"):
@@ -465,7 +499,7 @@ def main_ui():
             else: st.toast(f"⚠️ {len(errors)} lỗi!", icon="🚨")
             st.rerun()
 
-    with col_save:
+    with col_manual_save:
         if st.button("💾 Lưu Cấu Hình"):
             creds = get_creds()
             save_history_config(edited_df, creds, user_id)
