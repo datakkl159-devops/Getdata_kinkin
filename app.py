@@ -16,6 +16,7 @@ from collections import defaultdict
 # --- CẤU HÌNH ---
 st.set_page_config(page_title="Tool Quản Lý Data", layout="wide")
 
+# DANH SÁCH TÀI KHOẢN & TÊN HIỂN THỊ
 AUTHORIZED_USERS = {
     "admin2024": "Admin_Master",
     "team_hn": "Team_HaNoi",
@@ -25,7 +26,7 @@ AUTHORIZED_USERS = {
 BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
 SHEET_LOG_NAME = "log_lanthucthi"
-SHEET_LOCK_NAME = "sys_lock"  # Sheet dùng để khóa hệ thống
+SHEET_LOCK_NAME = "sys_lock"
 
 # --- TÊN 3 CỘT QUẢN LÝ ---
 COL_LINK_SRC = "Link file nguồn"
@@ -34,23 +35,35 @@ COL_MONTH_SRC = "Tháng chốt"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- AUTH ---
+# --- HÀM AUTH (ĐÃ FIX LỖI USERNAME) ---
 def check_login():
+    # Khởi tạo session state nếu chưa có
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
+    if 'current_user_id' not in st.session_state:
+        st.session_state['current_user_id'] = "Unknown"
+
+    # 1. Login bằng URL (Auto Key)
     if "auto_key" in st.query_params:
-        if st.query_params["auto_key"] in AUTHORIZED_USERS:
+        key = st.query_params["auto_key"]
+        if key in AUTHORIZED_USERS:
             st.session_state['logged_in'] = True
+            st.session_state['current_user_id'] = AUTHORIZED_USERS[key] # <--- GÁN TÊN USER
             return True
+
+    # 2. Login bằng Mật khẩu
     if not st.session_state['logged_in']:
         st.header("🔒 Đăng nhập hệ thống")
         pwd = st.text_input("Nhập mật khẩu truy cập:", type="password")
         if st.button("Đăng Nhập"):
             if pwd in AUTHORIZED_USERS:
                 st.session_state['logged_in'] = True
+                st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd] # <--- GÁN TÊN USER
                 st.rerun()
-            else: st.error("Mật khẩu không đúng!")
+            else: 
+                st.error("Mật khẩu không đúng!")
         return False
+    
     return True
 
 def get_creds():
@@ -65,13 +78,8 @@ def extract_id(url):
         except: return None
     return None
 
-# --- HÀM LOCK SYSTEM (QUAN TRỌNG) ---
+# --- LOCKING SYSTEM ---
 def get_system_lock(creds):
-    """
-    Kiểm tra xem hệ thống có đang bị khóa không.
-    Trả về: (is_locked, user_locking, lock_time_str)
-    Logic timeout: Nếu khóa quá 30 phút coi như khóa chết -> Cho phép chạy đè.
-    """
     try:
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -81,27 +89,21 @@ def get_system_lock(creds):
             wks.update([["is_locked", "user", "time_start"], ["FALSE", "", ""]])
             return False, "", ""
         
-        val = wks.cell(2, 1).value # Ô A2: Trạng thái khóa
-        user = wks.cell(2, 2).value # Ô B2: Người đang khóa
-        time_str = wks.cell(2, 3).value # Ô C2: Thời gian bắt đầu
+        val = wks.cell(2, 1).value
+        user = wks.cell(2, 2).value
+        time_str = wks.cell(2, 3).value
         
         if val == "TRUE":
-            # Kiểm tra Timeout (30 phút)
             try:
                 lock_time = datetime.strptime(time_str, "%d/%m/%Y %H:%M:%S")
                 diff = datetime.now() - lock_time
-                if diff.total_seconds() > 1800: # 30 phút
-                    return False, "", "" # Coi như hết hạn khóa
-            except: pass # Lỗi format ngày tháng -> coi như không khóa
-            
+                if diff.total_seconds() > 1800: return False, "", ""
+            except: pass
             return True, user, time_str
         return False, "", ""
     except: return False, "", ""
 
 def set_system_lock(creds, user_id, lock=True):
-    """
-    Lock hoặc Unlock hệ thống.
-    """
     try:
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -109,13 +111,11 @@ def set_system_lock(creds, user_id, lock=True):
         except: wks = sh.add_worksheet(SHEET_LOCK_NAME, rows=10, cols=5)
         
         now_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        if lock:
-            wks.update("A2:C2", [["TRUE", user_id, now_str]])
-        else:
-            wks.update("A2:C2", [["FALSE", "", ""]])
+        if lock: wks.update("A2:C2", [["TRUE", user_id, now_str]])
+        else: wks.update("A2:C2", [["FALSE", "", ""]])
     except: pass
 
-# --- HÀM LOG CHI TIẾT ---
+# --- LOG CHI TIẾT ---
 def write_detailed_log(creds, history_sheet_id, log_data_list):
     if not log_data_list: return
     try:
@@ -129,7 +129,7 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- LOAD CONFIG ---
+# --- CONFIG ---
 def load_history_config(creds):
     try:
         gc = gspread.authorize(creds)
@@ -166,7 +166,6 @@ def save_history_config(df_ui, creds):
         st.toast("✅ Đã lưu cấu hình!", icon="💾")
     except Exception as e: st.error(f"Lỗi lưu: {e}")
 
-# --- QUÉT QUYỀN ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi"
@@ -194,7 +193,7 @@ def manual_scan(df):
                 if not ok: errors.append(f"Dòng {row.get('STT', idx+1)} (Đích): {msg}")
     return errors
 
-# --- CORE LOGIC (XÓA CŨ - CHÈN MỚI) ---
+# --- CORE LOGIC (SAFE) ---
 def fetch_single_csv_safe(row_config, token):
     link_src = row_config.get('Link dữ liệu lấy dữ liệu', '')
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
@@ -221,22 +220,18 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
         gc = gspread.authorize(creds)
         target_id = extract_id(target_link)
         sh = gc.open_by_key(target_id)
-        
         real_sheet_name = str(target_sheet_name).strip()
         if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
-        
         try: wks = sh.worksheet(real_sheet_name)
         except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
-        
         token = creds.token 
         if not token:
+            import google.auth.transport.requests
             auth_req = google.auth.transport.requests.Request()
             creds.refresh(auth_req)
             token = creds.token
-
         export_url = f"https://docs.google.com/spreadsheets/d/{target_id}/export?format=csv&gid={wks.id}"
         headers = {'Authorization': f'Bearer {token}'}
-        
         df_current = pl.DataFrame()
         try:
             r = requests.get(export_url, headers=headers)
@@ -244,23 +239,16 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
                 df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
         except: pass
 
-        # --- LOGIC XÓA VÀ CHÈN (Requirement: Xóa hẳn các dòng trùng link nguồn) ---
         if not df_current.is_empty():
             if COL_LINK_SRC in df_current.columns:
-                # XÓA: Lọc GIỮ LẠI những dòng KHÔNG nằm trong danh sách link cần cập nhật
                 df_keep = df_current.filter(~pl.col(COL_LINK_SRC).is_in(links_to_remove))
-            else:
-                df_keep = df_current 
-        else:
-            df_keep = pl.DataFrame()
+            else: df_keep = df_current 
+        else: df_keep = pl.DataFrame()
 
-        # CHÈN: Nối đuôi dữ liệu mới vào
         if not df_new_updates.is_empty():
             df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
-        else:
-            df_final = df_keep
+        else: df_final = df_keep
 
-        # Sắp xếp cột: Đưa 3 cột quản lý xuống cuối
         all_cols = df_final.columns
         data_cols = [c for c in all_cols if c not in [COL_LINK_SRC, COL_LABEL_SRC, COL_MONTH_SRC]]
         final_order = data_cols + [COL_LINK_SRC, COL_LABEL_SRC, COL_MONTH_SRC]
@@ -276,12 +264,11 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
 def process_pipeline(rows_to_run, user_id):
     creds = get_creds()
     
-    # --- CHECK LOCK ---
+    # LOCK CHECK
     is_locked, locking_user, lock_time = get_system_lock(creds)
-    if is_locked and locking_user != user_id: # Nếu bị khóa bởi người khác
-        return False, f"HỆ THỐNG ĐANG BẬN! {locking_user} đang chạy từ {lock_time}. Vui lòng thử lại sau."
+    if is_locked and locking_user != user_id:
+        return False, f"HỆ THỐNG ĐANG BẬN! {locking_user} đang chạy từ {lock_time}."
     
-    # --- SET LOCK ---
     set_system_lock(creds, user_id, lock=True)
     
     try:
@@ -316,7 +303,8 @@ def process_pipeline(rows_to_run, user_id):
                     
                     log_row = [
                         time_now, str(row.get('Ngày chốt', '')), str(row.get('Tháng', '')),
-                        user_id, src_link, target_link, target_sheet,
+                        user_id, # <--- BIẾN NÀY GIỜ ĐÃ CÓ GIÁ TRỊ ĐÚNG
+                        src_link, target_link, target_sheet,
                         row.get('Tên sheet nguồn dữ liệu gốc', ''), status,
                         str(df.height) if df is not None else "0"
                     ]
@@ -337,24 +325,23 @@ def process_pipeline(rows_to_run, user_id):
                 
         history_id = st.secrets["gcp_service_account"]["history_sheet_id"]
         write_detailed_log(creds, history_id, log_entries)
-        
         return all_success, " | ".join(final_messages)
         
     finally:
-        # --- RELEASE LOCK (Bắt buộc mở khóa dù lỗi) ---
         set_system_lock(creds, user_id, lock=False)
 
-# --- UI CHÍNH ---
+# --- UI ---
 def main_ui():
+    # Lấy User ID đã được fix từ check_login
     user_id = st.session_state.get('current_user_id', 'Unknown')
+    
     st.title(f"⚙️ Tool Quản Lý Data (User: {user_id})")
     creds = get_creds()
 
-    # --- CHECK LOCK TRẠNG THÁI HIỂN THỊ ---
     is_locked, locking_user, lock_time = get_system_lock(creds)
     if is_locked and locking_user != user_id:
-        st.warning(f"⚠️ **HỆ THỐNG ĐANG BẬN!** Người dùng **{locking_user}** đang xử lý dữ liệu (Bắt đầu: {lock_time}). Vui lòng đợi họ làm xong.")
-        st.stop() # Dừng không cho làm gì cả
+        st.warning(f"⚠️ **HỆ THỐNG ĐANG BẬN!** Người dùng **{locking_user}** đang xử lý (Bắt đầu: {lock_time}).")
+        st.stop()
 
     if 'df_config' not in st.session_state:
         with st.spinner("Đang tải..."):
@@ -406,7 +393,6 @@ def main_ui():
         except: 
             wks_sys = sh.add_worksheet("sys_config", rows=10, cols=5)
             wks_sys.update([["setting_name", "value"], ["run_hour", "8"], ["run_freq", "1 ngày/1 lần"]])
-        
         data_conf = wks_sys.get_all_values()
         saved_hour = 8
         saved_freq = "1 ngày/1 lần"
@@ -440,10 +426,9 @@ def main_ui():
     
     with col_run:
         if st.button("▶️ CẬP NHẬT DỮ LIỆU (Chưa cập nhật)", type="primary"):
-            # CHECK LOCK LẦN NỮA TRONG TRƯỜNG HỢP VỪA BẤM THÌ CÓ NGƯỜI KHÁC VÀO
             is_locked, locking_user, lock_time = get_system_lock(creds)
             if is_locked and locking_user != user_id:
-                st.error(f"❌ Chậm chân rồi! {locking_user} vừa mới chiếm quyền điều khiển.")
+                st.error(f"❌ Chậm chân rồi! {locking_user} vừa chiếm quyền.")
                 st.rerun()
             else:
                 rows_run = edited_df[edited_df['Trạng thái'] == "Chưa cập nhật"].to_dict('records')
