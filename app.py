@@ -37,10 +37,13 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapi
 def check_login():
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
+    
     if "auto_key" in st.query_params:
-        if st.query_params["auto_key"] in AUTHORIZED_USERS:
+        key = st.query_params["auto_key"]
+        if key in AUTHORIZED_USERS:
             st.session_state['logged_in'] = True
             return True
+
     if not st.session_state['logged_in']:
         st.header("🔒 Đăng nhập hệ thống")
         pwd = st.text_input("Nhập mật khẩu truy cập:", type="password")
@@ -93,7 +96,6 @@ def load_history_config(creds):
         if 'Trạng thái' not in df.columns:
             df['Trạng thái'] = "Chưa cập nhật"
         else:
-            # Chỉ cho phép 2 giá trị này
             df['Trạng thái'] = df['Trạng thái'].apply(lambda x: "Đã cập nhật" if str(x).strip() in ["Đã cập nhật", "Đã chốt", "TRUE"] else "Chưa cập nhật")
 
         if 'Ngày chốt' in df.columns:
@@ -312,7 +314,7 @@ def main_ui():
             "STT": st.column_config.NumberColumn("STT", disabled=True, width="small"),
             "Trạng thái": st.column_config.SelectboxColumn(
                 "Trạng thái", 
-                options=["Chưa cập nhật", "Đã cập nhật"], # List thả xuống 2 giá trị
+                options=["Chưa cập nhật", "Đã cập nhật"], 
                 required=True, 
                 width="small"
             ),
@@ -327,17 +329,13 @@ def main_ui():
     )
 
     if not edited_df.equals(st.session_state['df_config']):
-        # Reset STT
         edited_df = edited_df.reset_index(drop=True)
         edited_df['STT'] = range(1, len(edited_df) + 1)
-        
-        # Cập nhật cột thông báo Hành động dựa trên Trạng thái
         for idx, row in edited_df.iterrows():
             if row['Trạng thái'] == "Chưa cập nhật": 
                 edited_df.at[idx, 'Hành động'] = "Sẽ chạy"
             else: 
                 edited_df.at[idx, 'Hành động'] = ""
-                
         st.session_state['df_config'] = edited_df
         st.rerun()
 
@@ -374,7 +372,6 @@ def main_ui():
                 cell_h = wks_sys.find("run_hour")
                 if cell_h: wks_sys.update_cell(cell_h.row, cell_h.col + 1, str(new_hour))
                 else: wks_sys.append_row(["run_hour", str(new_hour)])
-                
                 cell_f = wks_sys.find("run_freq")
                 if cell_f: wks_sys.update_cell(cell_f.row, cell_f.col + 1, str(new_freq))
                 else: wks_sys.append_row(["run_freq", str(new_freq)])
@@ -383,10 +380,10 @@ def main_ui():
 
     st.divider()
 
-    # 3. NÚT CHẠY
-    col_run, col_scan, col_save = st.columns([4, 1])
+    # 3. NÚT CHẠY & QUÉT (ĐÃ FIX LỖI CHIA CỘT)
+    col_run, col_scan, col_save = st.columns([3, 1, 1])
+    
     with col_run:
-        # Nút này sẽ tìm những dòng có Trạng thái = "Chưa cập nhật"
         if st.button("▶️ CẬP NHẬT DỮ LIỆU (Chưa cập nhật)", type="primary"):
             rows_run = edited_df[edited_df['Trạng thái'] == "Chưa cập nhật"].to_dict('records')
             
@@ -397,12 +394,10 @@ def main_ui():
                     success, msg = process_pipeline(rows_run, user_id)
                     if success:
                         st.success(f"Kết quả: {msg}")
-                        # Auto chuyển trạng thái sang Đã cập nhật
                         for idx, row in edited_df.iterrows():
                             if row['Trạng thái'] == "Chưa cập nhật":
                                 edited_df.at[idx, 'Trạng thái'] = "Đã cập nhật"
                                 edited_df.at[idx, 'Hành động'] = "Vừa xong"
-                        
                         save_history_config(edited_df, creds)
                         st.session_state['df_config'] = edited_df
                         time.sleep(1)
