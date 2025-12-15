@@ -23,10 +23,17 @@ COL_MONTH_SRC = "Tháng chốt"
 def get_creds():
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT")
     if not creds_json: return None
-    return service_account.Credentials.from_service_account_info(
-        json.loads(creds_json), 
-        scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-    )
+    try:
+        # Nếu GitHub Actions bị mã hóa 2 lần, cần load 2 lần.
+        # Ở đây ta giả sử load 1 lần là ra dict.
+        creds_info = json.loads(creds_json)
+        if isinstance(creds_info, str): # Nếu load xong vẫn là string, load tiếp
+             creds_info = json.loads(creds_info)
+        return service_account.Credentials.from_service_account_info(
+            creds_info, 
+            scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+        )
+    except: return None
 
 def extract_id(url):
     if url and "docs.google.com" in str(url):
@@ -92,7 +99,6 @@ def check_is_run_time(creds, history_sheet_id):
         return False
     except: return False
 
-# --- LOGIC MỚI: TÌM DIỆT & CHÈN ---
 def fetch_single_csv_safe(row_config, token):
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
@@ -118,11 +124,14 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
     try:
         gc = gspread.authorize(creds)
         target_id = extract_id(target_link)
+        if not target_id: return False, "Link đích lỗi"
+        
         sh = gc.open_by_key(target_id)
         real_sheet_name = str(target_sheet_name).strip()
         if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
         try: wks = sh.worksheet(real_sheet_name)
         except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
+        
         token = creds.token 
         if not token:
             import google.auth.transport.requests
@@ -130,7 +139,7 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
             creds.refresh(auth_req)
             token = creds.token
 
-        # 1. DELETE OLD
+        # 1. DELETE
         existing_headers = []
         try: existing_headers = wks.row_values(1)
         except: pass
@@ -157,12 +166,11 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
                     delete_reqs = []
                     for start, end in reversed(ranges):
                         delete_reqs.append({"deleteDimension": {"range": {"sheetId": wks.id, "dimension": "ROWS", "startIndex": start - 1, "endIndex": end}}})
-                    
                     if delete_reqs:
                         wks.batch_update({'requests': delete_reqs})
                         time.sleep(1)
 
-        # 2. APPEND NEW
+        # 2. APPEND
         if not df_new_updates.is_empty():
             pdf = df_new_updates.to_pandas().fillna('')
             data_values = pdf.values.tolist()
