@@ -46,20 +46,16 @@ def write_auto_log(creds, history_sheet_id, status, message):
         wks.append_row([datetime.now(tz).strftime("%d/%m/%Y %H:%M:%S"), status, message, "GitHub Action"])
     except: pass
 
-# --- LOCKING SYSTEM ---
 def get_system_lock(creds, history_id):
     try:
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(history_id)
         try: wks = sh.worksheet(SHEET_LOCK_NAME)
         except: return False, "", ""
-        
         val = wks.cell(2, 1).value
         user = wks.cell(2, 2).value
         time_str = wks.cell(2, 3).value
-        
         if val == "TRUE":
-             # Timeout 30 mins
             try:
                 lock_time = datetime.strptime(time_str, "%d/%m/%Y %H:%M:%S")
                 diff = datetime.now() - lock_time
@@ -75,7 +71,6 @@ def set_system_lock(creds, history_id, user_id, lock=True):
         sh = gc.open_by_key(history_id)
         try: wks = sh.worksheet(SHEET_LOCK_NAME)
         except: wks = sh.add_worksheet(SHEET_LOCK_NAME, rows=10, cols=5)
-        
         now_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         if lock: wks.update("A2:C2", [["TRUE", user_id, now_str]])
         else: wks.update("A2:C2", [["FALSE", "", ""]])
@@ -87,16 +82,12 @@ def check_is_run_time(creds, history_sheet_id):
         sh = gc.open_by_key(history_sheet_id)
         try: wks = sh.worksheet("sys_config")
         except: return datetime.now(pytz.timezone('Asia/Ho_Chi_Minh')).hour == 8
-
         records = wks.get_all_values()
         conf = {r[0]: r[1] for r in records if len(r) > 1}
-        
         scheduled_hour = int(conf.get("run_hour", "8"))
         run_freq = conf.get("run_freq", "1 ngày/1 lần")
-        
         tz_vn = pytz.timezone('Asia/Ho_Chi_Minh')
         now_vn = datetime.now(tz_vn)
-        
         if now_vn.hour != scheduled_hour: return False
         if run_freq == "1 ngày/1 lần": return True
         elif run_freq == "1 tuần/1 lần" and now_vn.weekday() == 0: return True
@@ -149,14 +140,12 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
                 df_current = pl.read_csv(io.BytesIO(r.content), infer_schema_length=0)
         except: pass
 
-        # XÓA CŨ
         if not df_current.is_empty():
             if COL_LINK_SRC in df_current.columns:
                 df_keep = df_current.filter(~pl.col(COL_LINK_SRC).is_in(links_to_remove))
             else: df_keep = df_current 
         else: df_keep = pl.DataFrame()
 
-        # CHÈN MỚI
         if not df_new_updates.is_empty():
             df_final = pl.concat([df_keep, df_new_updates], how="diagonal")
         else: df_final = df_keep
@@ -180,14 +169,11 @@ def run_auto_job():
     HISTORY_SHEET_ID = os.environ.get("HISTORY_SHEET_ID")
     if not check_is_run_time(creds, HISTORY_SHEET_ID): return
 
-    # --- CHECK LOCK ---
     is_locked, user, _ = get_system_lock(creds, HISTORY_SHEET_ID)
     if is_locked:
         write_auto_log(creds, HISTORY_SHEET_ID, "BỎ QUA", f"Hệ thống đang bị khóa bởi {user}")
-        print(f"Locked by {user}. Skip.")
         return
 
-    # --- SET LOCK ---
     set_system_lock(creds, HISTORY_SHEET_ID, "AUTO_BOT", lock=True)
     write_auto_log(creds, HISTORY_SHEET_ID, "ĐANG CHẠY", "Bắt đầu...")
 
@@ -197,13 +183,16 @@ def run_auto_job():
         wks_config = sh.worksheet(SHEET_CONFIG_NAME)
         df_config = get_as_dataframe(wks_config, evaluate_formulas=True, dtype=str)
         
+        # --- CẬP NHẬT TÊN TRẠNG THÁI MỚI ---
         rows_to_run = []
         if 'Trạng thái' in df_config.columns:
-            df_config['Trạng thái'] = df_config['Trạng thái'].apply(lambda x: "Đã cập nhật" if str(x).strip() in ["Đã cập nhật", "Đã chốt", "TRUE"] else "Chưa cập nhật")
-            rows_to_run = df_config[df_config['Trạng thái'] == "Chưa cập nhật"].to_dict('records')
+            # Map giá trị
+            df_config['Trạng thái'] = df_config['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
+            # Tìm dòng "Chưa chốt & đang cập nhật"
+            rows_to_run = df_config[df_config['Trạng thái'] == "Chưa chốt & đang cập nhật"].to_dict('records')
 
         if not rows_to_run:
-            write_auto_log(creds, HISTORY_SHEET_ID, "BỎ QUA", "Không có dòng nào 'Chưa cập nhật'.")
+            write_auto_log(creds, HISTORY_SHEET_ID, "BỎ QUA", "Không có dòng nào 'Chưa chốt'.")
             return
 
         import google.auth.transport.requests
@@ -242,8 +231,8 @@ def run_auto_job():
         msg_sum = " | ".join(final_msgs)
         if all_success:
             if 'Trạng thái' in df_config.columns:
-                df_config.loc[df_config['Trạng thái'] == "Chưa cập nhật", 'Hành động'] = "Đã xong (Auto)"
-                df_config.loc[df_config['Trạng thái'] == "Chưa cập nhật", 'Trạng thái'] = "Đã cập nhật"
+                df_config.loc[df_config['Trạng thái'] == "Chưa chốt & đang cập nhật", 'Hành động'] = "Đã xong (Auto)"
+                # Giữ nguyên trạng thái để chạy tiếp lần sau
             
             wks_config.clear()
             wks_config.update([df_config.columns.tolist()] + df_config.fillna('').values.tolist())
@@ -252,7 +241,6 @@ def run_auto_job():
             write_auto_log(creds, HISTORY_SHEET_ID, "LỖI", msg_sum)
 
     finally:
-        # --- UNLOCK ---
         set_system_lock(creds, HISTORY_SHEET_ID, "AUTO_BOT", lock=False)
 
 if __name__ == "__main__":
