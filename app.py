@@ -16,7 +16,6 @@ from collections import defaultdict
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 st.set_page_config(page_title="Tool Quản Lý Data Đa Khối", layout="wide")
 
-# Danh sách tài khoản
 AUTHORIZED_USERS = {
     "admin2024": "Admin_Master",
     "team_hn": "Team_HaNoi",
@@ -111,7 +110,7 @@ def verify_access_fast(url, creds):
     except gspread.exceptions.APIError as e: return False, "⛔ Chưa cấp quyền (403)" if "403" in str(e) else f"❌ Lỗi API: {e}"
     except Exception as e: return False, f"❌ Lỗi: {e}"
 
-# --- 3. LOGIC XỬ LÝ (CORE) ---
+# --- 3. CORE LOGIC (Xử lý dữ liệu) ---
 def fetch_single_csv_safe(row_config, creds, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', '')); source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip(); month_val = str(row_config.get('Tháng', '')); sheet_id = extract_id(link_src)
@@ -263,26 +262,33 @@ def process_pipeline(rows_to_run, user_id):
         return all_success, global_results_map, run_stats
     finally: set_system_lock(creds, user_id, lock=False)
 
-# --- 4. GIAO DIỆN CHÍNH ---
+# --- 4. GIAO DIỆN CHÍNH (MULTI-BLOCK UI) ---
 def main_ui():
     if not check_login(): return
     user_id = st.session_state['current_user_id']
     st.title(f"⚙️ Tool Quản Lý Data Đa Khối (User: {user_id})")
     creds = get_creds()
 
+    # --- Load Data Helper ---
     def load_data(creds):
         gc = gspread.authorize(creds); sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
+        
+        # 1. Load Data Config
         wks = sh.worksheet(SHEET_CONFIG_NAME); df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str); df = df.dropna(how='all')
+        
         rename_map = {'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích', 'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc', 'Link file nguồn': 'Link dữ liệu lấy dữ liệu', 'Link file đích': 'Link dữ liệu đích'}
         for old, new in rename_map.items():
             if old in df.columns and new not in df.columns: df = df.rename(columns={old: new})
+        
         required_cols = ['Block_Name', 'Trạng thái', 'Ngày chốt', 'Tháng', 'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 'Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 'Kết quả', 'Dòng dữ liệu']
         for c in required_cols:
             if c not in df.columns: df[c] = ""
+        
         df['Block_Name'] = df['Block_Name'].fillna(DEFAULT_BLOCK_NAME).replace('', DEFAULT_BLOCK_NAME)
         if 'STT' in df.columns: df = df.drop(columns=['STT'])
         df.insert(0, 'STT', range(1, len(df) + 1))
         
+        # 2. Load Sys Config
         try: wks_sys = sh.worksheet(SHEET_SYS_CONFIG)
         except: wks_sys = sh.add_worksheet(SHEET_SYS_CONFIG, rows=20, cols=3)
         df_sys = get_as_dataframe(wks_sys, evaluate_formulas=True, dtype=str)
@@ -303,9 +309,11 @@ def main_ui():
         wks = sh.worksheet(SHEET_SYS_CONFIG); wks.clear(); wks.update([df_sys.columns.tolist()] + df_sys.fillna('').values.tolist())
         st.toast("✅ Đã lưu cấu hình khối!", icon="💾")
 
+    # --- Load Session ---
     if 'df_config' not in st.session_state or 'df_sys' not in st.session_state:
-        with st.spinner("Đang tải dữ liệu..."): d_conf, d_sys = load_data(creds); st.session_state['df_config'] = d_conf; st.session_state['df_sys'] = d_sys
+        with st.spinner("Đang tải dữ liệu đa khối..."): d_conf, d_sys = load_data(creds); st.session_state['df_config'] = d_conf; st.session_state['df_sys'] = d_sys
 
+    # --- BLOCK MANAGEMENT (ADD/DELETE) ---
     with st.expander("🛠️ Quản lý Khối (Thêm/Xóa)", expanded=False):
         c_add, c_del = st.columns([2, 1])
         with c_add:
@@ -313,9 +321,12 @@ def main_ui():
                 new_block_name = st.text_input("Tên khối mới:")
                 if st.form_submit_button("Thêm Khối"):
                     if new_block_name and new_block_name not in st.session_state['df_sys']['Block_Name'].values:
-                        new_row = pd.DataFrame([{'Block_Name': new_block_name, 'Run_Hour': '8', 'Run_Freq': 'Hàng ngày'}]); st.session_state['df_sys'] = pd.concat([st.session_state['df_sys'], new_row], ignore_index=True); save_sys_config(st.session_state['df_sys'], creds); st.rerun()
+                        new_row = pd.DataFrame([{'Block_Name': new_block_name, 'Run_Hour': '8', 'Run_Freq': 'Hàng ngày'}])
+                        st.session_state['df_sys'] = pd.concat([st.session_state['df_sys'], new_row], ignore_index=True)
+                        save_sys_config(st.session_state['df_sys'], creds); st.rerun()
                     elif new_block_name: st.warning("Tên khối đã tồn tại.")
 
+    # --- GLOBAL RUN ALL ---
     if st.button("🚀 CHẠY TẤT CẢ CÁC KHỐI (Tuần tự)", type="primary"):
         blocks = st.session_state['df_sys']['Block_Name'].unique(); progress_bar = st.progress(0); status_text = st.empty()
         total_s = 0; total_r = 0; total_t = 0
@@ -336,45 +347,72 @@ def main_ui():
         st.success(f"🎉 TỔNG KẾT: Xử lý {total_s} nguồn | Thêm +{total_r} dòng | Tổng thời gian: {round(total_t, 2)}s")
         time.sleep(3); st.rerun()
 
+    # --- RENDER BLOCK LIST ---
     all_blocks = st.session_state['df_sys']['Block_Name'].unique()
     for block_name in all_blocks:
         try: block_sys_info = st.session_state['df_sys'][st.session_state['df_sys']['Block_Name'] == block_name].iloc[0]
         except: continue
         cur_hour = int(block_sys_info.get('Run_Hour', 8)); cur_freq = block_sys_info.get('Run_Freq', 'Hàng ngày')
+        
+        # --- KHỐI CONTAINER ---
         with st.container(border=True):
+            # Header
             c_head, c_btn = st.columns([3, 1])
             with c_head: st.subheader(f"📦 Khối: {block_name}" + (" (Mặc định)" if block_name == DEFAULT_BLOCK_NAME else ""))
             with c_btn:
                 if block_name != DEFAULT_BLOCK_NAME:
                     if st.button("🗑️ Xóa Khối", key=f"del_{block_name}"):
-                        st.session_state['df_sys'] = st.session_state['df_sys'][st.session_state['df_sys']['Block_Name'] != block_name]; save_sys_config(st.session_state['df_sys'], creds); st.rerun()
+                        st.session_state['df_sys'] = st.session_state['df_sys'][st.session_state['df_sys']['Block_Name'] != block_name]
+                        save_sys_config(st.session_state['df_sys'], creds); st.rerun()
+
+            # Schedule
             c_freq, c_hour, c_save_sche = st.columns([2, 2, 1])
             with c_freq: new_f = st.selectbox("Tần suất:", ["Hàng ngày", "Hàng tuần", "Hàng tháng"], index=["Hàng ngày", "Hàng tuần", "Hàng tháng"].index(cur_freq) if cur_freq in ["Hàng ngày", "Hàng tuần", "Hàng tháng"] else 0, key=f"freq_{block_name}")
             with c_hour: new_h = st.slider("Giờ chạy (VN):", 0, 23, value=cur_hour, key=f"hour_{block_name}")
             with c_save_sche: 
                 st.write(""); 
-                if st.button("Lưu giờ", key=f"save_h_{block_name}"):
+                if st.button("Lưu Hẹn Giờ", key=f"save_h_{block_name}"):
                     idx = st.session_state['df_sys'].index[st.session_state['df_sys']['Block_Name'] == block_name].tolist()[0]
                     st.session_state['df_sys'].at[idx, 'Run_Hour'] = str(new_h); st.session_state['df_sys'].at[idx, 'Run_Freq'] = new_f
                     save_sys_config(st.session_state['df_sys'], creds); st.toast(f"Đã lưu lịch cho khối {block_name}")
 
+            # Data Table
             df_block_view = st.session_state['df_config'][st.session_state['df_config']['Block_Name'] == block_name].copy()
             col_order = ["STT", "Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Kết quả", "Dòng dữ liệu"]
-            edited_block_df = st.data_editor(df_block_view, column_order=col_order, column_config={"STT": st.column_config.NumberColumn("STT", disabled=True, width="small"), "Trạng thái": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True), "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"), "Kết quả": st.column_config.TextColumn("Kết quả", disabled=True), "Dòng dữ liệu": st.column_config.TextColumn("Dòng Dữ Liệu", disabled=True)}, use_container_width=True, hide_index=True, num_rows="dynamic", key=f"editor_{block_name}")
-            if not edited_block_df.equals(df_block_view):
-                edited_block_df['Block_Name'] = block_name
-                df_main_no_block = st.session_state['df_config'][st.session_state['df_config']['Block_Name'] != block_name]
-                st.session_state['df_config'] = pd.concat([df_main_no_block, edited_block_df], ignore_index=True); st.session_state['df_config'].reset_index(drop=True, inplace=True); st.session_state['df_config']['STT'] = range(1, len(st.session_state['df_config']) + 1)
-                save_data(st.session_state['df_config'], creds); st.rerun()
+            
+            edited_block_df = st.data_editor(
+                df_block_view, column_order=col_order,
+                column_config={
+                    "STT": st.column_config.NumberColumn("STT", disabled=True, width="small"),
+                    "Trạng thái": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
+                    "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"),
+                    "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"),
+                    "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"),
+                    "Kết quả": st.column_config.TextColumn("Kết quả", disabled=True),
+                    "Dòng dữ liệu": st.column_config.TextColumn("Dòng Dữ Liệu", disabled=True)
+                },
+                use_container_width=True, hide_index=True, num_rows="dynamic", key=f"editor_{block_name}"
+            )
 
-            c_run_b, c_scan_b = st.columns([1, 1])
+            # Sync Editing Back to Main
+            if not edited_block_df.equals(df_block_view):
+                edited_block_df['Block_Name'] = block_name # Ensure new rows belong to block
+                df_main_no_block = st.session_state['df_config'][st.session_state['df_config']['Block_Name'] != block_name]
+                st.session_state['df_config'] = pd.concat([df_main_no_block, edited_block_df], ignore_index=True)
+                # Reset STT
+                st.session_state['df_config'].reset_index(drop=True, inplace=True)
+                st.session_state['df_config']['STT'] = range(1, len(st.session_state['df_config']) + 1)
+                st.rerun() # Refresh to show update
+
+            # Actions
+            c_run_b, c_scan_b, c_save_b = st.columns([1, 1, 1])
             with c_run_b:
-                if st.button(f"▶️ Chạy Khối '{block_name}'", key=f"run_{block_name}"):
+                if st.button(f"▶️ Chạy Khối '{block_name}'", key=f"run_{block_name}", type="primary"):
                     rows_run = edited_block_df[edited_block_df['Trạng thái'] == "Chưa chốt & đang cập nhật"].to_dict('records')
                     rows_run = [r for r in rows_run if len(str(r.get('Link dữ liệu lấy dữ liệu', ''))) > 5]
                     if not rows_run: st.warning("Không có dòng nào 'Chưa chốt'.")
                     else:
-                        with st.spinner(f"Đang xử lý khối {block_name}..."):
+                        with st.status(f"Đang xử lý khối {block_name}...", expanded=True):
                             ok, res_map, stats = process_pipeline(rows_run, f"{user_id}_{block_name}")
                             if res_map:
                                 for idx, row in st.session_state['df_config'].iterrows():
@@ -385,6 +423,7 @@ def main_ui():
                                 save_data(st.session_state['df_config'], creds)
                                 st.success(f"✅ Xong! Xử lý: {stats['sources']} nguồn | Thêm: +{stats['rows']} dòng | Hết: {stats['time']}s")
                                 time.sleep(2); st.rerun()
+
             with c_scan_b:
                 if st.button(f"🔍 Quét Quyền '{block_name}'", key=f"scan_{block_name}"):
                     errs = []
@@ -401,6 +440,10 @@ def main_ui():
                         st.error(f"Phát hiện lỗi ở khối {block_name}:")
                         for stt, typ, lk, m in errs: st.markdown(f"- Dòng {stt} [{typ}]: {m}")
                     else: st.success(f"Khối {block_name} OK! (Nguồn: Đã có quyền XEM, Đích: Đã có quyền XEM/SỬA)")
+            
+            with c_save_b:
+                if st.button(f"💾 Lưu Cấu Hình '{block_name}'", key=f"save_conf_{block_name}"):
+                    save_data(st.session_state['df_config'], creds)
 
 if __name__ == "__main__":
     main_ui()
