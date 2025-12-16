@@ -85,14 +85,20 @@ def check_is_run_time(creds, history_sheet_id):
         except: return datetime.now(pytz.timezone('Asia/Ho_Chi_Minh')).hour == 8
         records = wks.get_all_values()
         conf = {r[0]: r[1] for r in records if len(r) > 1}
+        
         scheduled_hour = int(conf.get("run_hour", "8"))
-        run_freq = conf.get("run_freq", "1 ngày/1 lần")
+        run_freq = conf.get("run_freq", "Hàng ngày") # Mặc định mới
+        
         tz_vn = pytz.timezone('Asia/Ho_Chi_Minh')
         now_vn = datetime.now(tz_vn)
+        
         if now_vn.hour != scheduled_hour: return False
-        if run_freq == "1 ngày/1 lần": return True
-        elif run_freq == "1 tuần/1 lần" and now_vn.weekday() == 0: return True
-        elif run_freq == "1 tháng/1 lần" and now_vn.day == 1: return True
+        
+        # LOGIC MỚI: Check theo từ khóa tiếng Việt
+        if run_freq == "Hàng ngày" or run_freq == "1 ngày/1 lần": return True
+        elif (run_freq == "Hàng tuần" or run_freq == "1 tuần/1 lần") and now_vn.weekday() == 0: return True
+        elif (run_freq == "Hàng tháng" or run_freq == "1 tháng/1 lần") and now_vn.day == 1: return True
+        
         return False
     except: return False
 
@@ -102,6 +108,9 @@ def fetch_single_csv_safe(row_config, token):
     month_val = str(row_config.get('Tháng', ''))
     sheet_id = extract_id(link_src)
     if not sheet_id: return None, "Link lỗi"
+    
+    # Thử lấy sheet đầu tiên (GID=0) hoặc tìm cách lấy đúng sheet (ở đây bản auto chạy đơn giản lấy GID 0 hoặc cần nâng cấp giống app.py nếu muốn chính xác sheet name)
+    # Để an toàn cho bản auto, ta thường lấy sheet đầu tiên nếu không có cơ chế tìm GID phức tạp
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
     headers = {'Authorization': f'Bearer {token}'}
     try:
@@ -136,7 +145,6 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
             creds.refresh(auth_req)
             token = creds.token
 
-        # 1. DELETE
         existing_headers = []
         try: existing_headers = wks.row_values(1)
         except: pass
@@ -164,18 +172,29 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
                     for start, end in reversed(ranges):
                         delete_reqs.append({"deleteDimension": {"range": {"sheetId": wks.id, "dimension": "ROWS", "startIndex": start - 1, "endIndex": end}}})
                     if delete_reqs:
-                        # FIX: Dùng sh.batch_update
                         sh.batch_update({'requests': delete_reqs})
                         time.sleep(1)
 
-        # 2. APPEND
         if not df_new_updates.is_empty():
             pdf = df_new_updates.to_pandas().fillna('')
-            data_values = pdf.values.tolist()
-            if not existing_headers:
-                headers = pdf.columns.tolist()
-                wks.append_row(headers)
             
+            # Auto Align Header cho Bot
+            new_cols = pdf.columns.tolist()
+            if not existing_headers:
+                wks.append_row(new_cols)
+                final_headers = new_cols
+            else:
+                missing = [c for c in new_cols if c not in existing_headers]
+                if missing:
+                    wks.resize(cols=len(existing_headers) + len(missing))
+                    final_headers = existing_headers + missing
+                    wks.update(range_name="A1", values=[final_headers])
+                else:
+                    final_headers = existing_headers
+            
+            pdf_aligned = pdf.reindex(columns=final_headers, fill_value="")
+            data_values = pdf_aligned.values.tolist()
+
             BATCH_SIZE = 5000
             total_rows = len(data_values)
             for i in range(0, total_rows, BATCH_SIZE):
