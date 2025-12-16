@@ -28,7 +28,7 @@ SHEET_LOG_NAME = "log_lanthucthi"
 SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
 
-# Tên các cột hệ thống (Internal Names - Dùng để xử lý logic)
+# Tên các cột hệ thống
 COL_LINK_SRC = "Link file nguồn"
 COL_LABEL_SRC = "Sheet nguồn"
 COL_MONTH_SRC = "Tháng chốt"
@@ -277,9 +277,6 @@ def main_ui():
     st.title(f"⚙️ Tool Quản Lý Data Đa Khối (User: {user_id})")
     creds = get_creds()
 
-    # THỨ TỰ CỘT HIỂN THỊ (THEO YÊU CẦU)
-    # 1. STT | 2. Trạng thái | 3. Ngày chốt | 4. Tháng | 5. Link Nguồn | 6. Link Đích 
-    # 7. Tên sheet dữ liệu dịch | 8. Tên sheet nguồn dữ liệu gốc | 9. Kết quả | 10. dòng dữ liệu
     COL_ORDER = ["STT", "Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Kết quả", "Dòng dữ liệu"]
 
     # --- Load Data Helper ---
@@ -289,13 +286,7 @@ def main_ui():
         # 1. Load Data Config
         wks = sh.worksheet(SHEET_CONFIG_NAME); df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str); df = df.dropna(how='all')
         
-        # Mapping tên cột cũ/mới (Internal names)
-        rename_map = {
-            'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích', 
-            'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc',
-            'Link file nguồn': 'Link dữ liệu lấy dữ liệu',
-            'Link file đích': 'Link dữ liệu đích'
-        }
+        rename_map = {'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích', 'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc', 'Link file nguồn': 'Link dữ liệu lấy dữ liệu', 'Link file đích': 'Link dữ liệu đích'}
         for old, new in rename_map.items():
             if old in df.columns and new not in df.columns: df = df.rename(columns={old: new})
         
@@ -351,6 +342,7 @@ def main_ui():
 
     # --- GLOBAL RUN ALL ---
     if st.button("🚀 CHẠY TẤT CẢ CÁC KHỐI (Tuần tự)", type="primary"):
+        # TỰ ĐỘNG LƯU TRƯỚC KHI CHẠY ALL
         save_data(st.session_state['df_config'], creds)
         
         blocks = st.session_state['df_sys']['Block_Name'].unique(); progress_bar = st.progress(0); status_text = st.empty()
@@ -358,9 +350,12 @@ def main_ui():
         for i, b_name in enumerate(blocks):
             status_text.text(f"Đang xử lý Khối: {b_name}..."); df_curr = st.session_state['df_config']
             
-            df_curr['Trạng thái'] = df_curr['Trạng thái'].astype(str).str.strip()
-            df_curr['Link dữ liệu lấy dữ liệu'] = df_curr['Link dữ liệu lấy dữ liệu'].astype(str).str.strip()
+            # --- FIX LOGIC LỌC DỮ LIỆU ---
+            # Chuẩn hóa dữ liệu trước khi lọc (tránh None, khoảng trắng)
+            df_curr['Trạng thái'] = df_curr['Trạng thái'].fillna("Chưa chốt & đang cập nhật").astype(str).str.strip()
+            df_curr['Link dữ liệu lấy dữ liệu'] = df_curr['Link dữ liệu lấy dữ liệu'].fillna("").astype(str).str.strip()
             
+            # Lọc chính xác
             rows_run = df_curr[
                 (df_curr['Block_Name'] == b_name) & 
                 (df_curr['Trạng thái'] == "Chưa chốt & đang cập nhật") &
@@ -377,7 +372,7 @@ def main_ui():
                         st.session_state['df_config'].at[idx, 'Dòng dữ liệu'] = rng
             progress_bar.progress((i + 1) / len(blocks))
         
-        save_data(st.session_state['df_config'], creds); status_text.text("✅ Đã chạy xong tất cả!")
+        save_data(st.session_state['df_config'], creds); status_text.text("✅ Đã chạy xong tất cả!"); 
         st.success(f"🎉 TỔNG KẾT: Xử lý {total_s} nguồn | Thêm +{total_r} dòng | Tổng thời gian: {round(total_t, 2)}s")
         time.sleep(3); st.rerun()
 
@@ -388,6 +383,7 @@ def main_ui():
         except: continue
         cur_hour = int(block_sys_info.get('Run_Hour', 8)); cur_freq = block_sys_info.get('Run_Freq', 'Hàng ngày')
         
+        # --- KHỐI CONTAINER ---
         with st.container(border=True):
             # Header
             c_head, c_btn = st.columns([3, 1])
@@ -412,18 +408,16 @@ def main_ui():
             # Data Table
             df_block_view = st.session_state['df_config'][st.session_state['df_config']['Block_Name'] == block_name].copy()
             
-            # --- CẤU HÌNH CỘT HIỂN THỊ (ĐÃ CẬP NHẬT TÊN) ---
+            # Cấu hình hiển thị Tên Cột theo yêu cầu
             edited_block_df = st.data_editor(
                 df_block_view, column_order=COL_ORDER,
                 column_config={
                     "STT": st.column_config.NumberColumn("STT", disabled=True, width="small"),
                     "Trạng thái": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
                     "Ngày chốt": st.column_config.DateColumn("Ngày chốt", format="DD/MM/YYYY"),
-                    "Tháng": st.column_config.TextColumn("Tháng"),
-                    # --- ĐỔI TÊN CỘT HIỂN THỊ ---
                     "Link dữ liệu lấy dữ liệu": st.column_config.TextColumn("Link Nguồn", width="medium"),
                     "Link dữ liệu đích": st.column_config.TextColumn("Link Đích", width="medium"),
-                    "Tên sheet dữ liệu đích": st.column_config.TextColumn("Tên sheet dữ liệu dịch", width="small"),
+                    "Tên sheet dữ liệu đích": st.column_config.TextColumn("Tên sheet tử liệu dịch", width="small"),
                     "Tên sheet nguồn dữ liệu gốc": st.column_config.TextColumn("Tên sheet nguồn dữ liệu gốc", width="small"),
                     "Kết quả": st.column_config.TextColumn("Kết quả", disabled=True),
                     "Dòng dữ liệu": st.column_config.TextColumn("dòng dữ liệu", disabled=True)
@@ -446,12 +440,12 @@ def main_ui():
             with c_run_b:
                 if st.button(f"▶️ Chạy Khối '{block_name}'", key=f"run_{block_name}", type="primary"):
                     
-                    # 1. FILL & TRIM (CHUẨN HÓA)
+                    # 1. AUTO FILL & TRIM (FIX LỖI KHÔNG TÌM THẤY DÒNG)
                     edited_block_df['Trạng thái'] = edited_block_df['Trạng thái'].replace([None, 'nan', '', 'None'], "Chưa chốt & đang cập nhật")
                     edited_block_df['Trạng thái'] = edited_block_df['Trạng thái'].fillna("Chưa chốt & đang cập nhật").astype(str).str.strip()
                     edited_block_df['Link dữ liệu lấy dữ liệu'] = edited_block_df['Link dữ liệu lấy dữ liệu'].fillna("").astype(str).str.strip()
                     
-                    # 2. CƯỠNG CHẾ LƯU (SAVE FIRST)
+                    # 2. FORCE SAVE (FIX LỖI MẤT CẤU HÌNH)
                     edited_block_df['Block_Name'] = block_name
                     df_others = st.session_state['df_config'][st.session_state['df_config']['Block_Name'] != block_name]
                     df_new_total = pd.concat([df_others, edited_block_df], ignore_index=True)
@@ -461,7 +455,7 @@ def main_ui():
                     st.session_state['df_config'] = df_new_total
                     save_data(df_new_total, creds)
                     
-                    # 3. LỌC & CHẠY
+                    # 3. RUN PIPELINE
                     rows_run = edited_block_df[
                         (edited_block_df['Trạng thái'] == "Chưa chốt & đang cập nhật") & 
                         (edited_block_df['Link dữ liệu lấy dữ liệu'].str.len() > 5)
@@ -481,7 +475,6 @@ def main_ui():
                                             if str(row['Trạng thái']).strip() == "Chưa chốt & đang cập nhật":
                                                 st.session_state['df_config'].at[idx, 'Kết quả'] = msg
                                             st.session_state['df_config'].at[idx, 'Dòng dữ liệu'] = rng
-                                
                                 save_data(st.session_state['df_config'], creds)
                                 st.success(f"✅ Xong! {stats['sources']} nguồn | +{stats['rows']} dòng | {stats['time']}s")
                                 time.sleep(2); st.rerun()
