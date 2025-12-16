@@ -110,7 +110,7 @@ def verify_access_fast(url, creds):
     except gspread.exceptions.APIError as e: return False, "⛔ Chưa cấp quyền (403)" if "403" in str(e) else f"❌ Lỗi API: {e}"
     except Exception as e: return False, f"❌ Lỗi: {e}"
 
-# --- 3. CORE LOGIC (Fetch & Update) ---
+# --- 3. CORE LOGIC (XỬ LÝ DỮ LIỆU) ---
 def fetch_single_csv_safe(row_config, creds, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', '')); source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip(); month_val = str(row_config.get('Tháng', '')); sheet_id = extract_id(link_src)
@@ -269,11 +269,11 @@ def main_ui():
     st.title(f"⚙️ Tool Quản Lý Data Đa Khối (User: {user_id})")
     creds = get_creds()
 
-    # --- Helper: Load Data & Sys Config ---
+    # --- Load Data Helper ---
     def load_data(creds):
         gc = gspread.authorize(creds); sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
         
-        # 1. Load Data
+        # 1. Load Data Config
         wks = sh.worksheet(SHEET_CONFIG_NAME); df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str); df = df.dropna(how='all')
         
         rename_map = {'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích', 'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc', 'Link file nguồn': 'Link dữ liệu lấy dữ liệu', 'Link file đích': 'Link dữ liệu đích'}
@@ -332,16 +332,20 @@ def main_ui():
 
     # --- GLOBAL RUN ALL ---
     if st.button("🚀 CHẠY TẤT CẢ CÁC KHỐI (Tuần tự)", type="primary"):
+        # TỰ ĐỘNG LƯU TRƯỚC KHI CHẠY ALL
+        save_data(st.session_state['df_config'], creds)
+        
         blocks = st.session_state['df_sys']['Block_Name'].unique(); progress_bar = st.progress(0); status_text = st.empty()
         total_s = 0; total_r = 0; total_t = 0
         for i, b_name in enumerate(blocks):
             status_text.text(f"Đang xử lý Khối: {b_name}..."); df_curr = st.session_state['df_config']
             
             # --- FIX LOGIC LỌC DỮ LIỆU ---
-            # Chuẩn hóa để tránh lỗi khoảng trắng
+            # Chuẩn hóa dữ liệu trước khi lọc (tránh None, khoảng trắng)
             df_curr['Trạng thái'] = df_curr['Trạng thái'].astype(str).str.strip()
             df_curr['Link dữ liệu lấy dữ liệu'] = df_curr['Link dữ liệu lấy dữ liệu'].astype(str).str.strip()
             
+            # Lọc chính xác
             rows_run = df_curr[
                 (df_curr['Block_Name'] == b_name) & 
                 (df_curr['Trạng thái'] == "Chưa chốt & đang cập nhật") &
@@ -427,27 +431,21 @@ def main_ui():
             c_run_b, c_scan_b, c_save_b = st.columns([1, 1, 1])
             with c_run_b:
                 if st.button(f"▶️ Chạy Khối '{block_name}'", key=f"run_{block_name}", type="primary"):
-                    # --- FIX LOGIC LỌC DÒNG ĐỂ NHẬN DIỆN DÒNG MỚI THÊM ---
-                    # 1. Tạo bản sao để xử lý
-                    run_df = edited_block_df.copy()
                     
-                    # 2. Xử lý Trạng thái: Nếu rỗng/None -> Gán mặc định là "Chưa chốt" để chạy được ngay
-                    def normalize_status(val):
-                        s = str(val).strip()
-                        if s == "" or s.lower() == "nan" or s.lower() == "none":
-                            return "Chưa chốt & đang cập nhật"
-                        return s
-                    
-                    run_df['Trạng thái'] = run_df['Trạng thái'].apply(normalize_status)
-                    run_df['Link dữ liệu lấy dữ liệu'] = run_df['Link dữ liệu lấy dữ liệu'].astype(str).str.strip()
+                    # 1. TỰ ĐỘNG LƯU TRƯỚC KHI CHẠY (Fix lỗi mất data)
+                    save_data(st.session_state['df_config'], creds)
 
-                    # 3. Lọc dữ liệu
-                    rows_run = run_df[
-                        (run_df['Trạng thái'] == "Chưa chốt & đang cập nhật") &
-                        (run_df['Link dữ liệu lấy dữ liệu'].str.len() > 5)
+                    # 2. CHUẨN HÓA & LỌC DỮ LIỆU (Fix lỗi không thấy dòng)
+                    # Chuyển về string và strip khoảng trắng
+                    edited_block_df['Trạng thái'] = edited_block_df['Trạng thái'].astype(str).str.strip()
+                    edited_block_df['Link dữ liệu lấy dữ liệu'] = edited_block_df['Link dữ liệu lấy dữ liệu'].astype(str).str.strip()
+
+                    rows_run = edited_block_df[
+                        (edited_block_df['Trạng thái'] == "Chưa chốt & đang cập nhật") &
+                        (edited_block_df['Link dữ liệu lấy dữ liệu'].str.len() > 5)
                     ].to_dict('records')
                     
-                    if not rows_run: st.warning("Không có dòng nào 'Chưa chốt' hợp lệ (Kiểm tra Link).")
+                    if not rows_run: st.warning("Không có dòng nào 'Chưa chốt' hợp lệ (Kiểm tra Link & Trạng thái).")
                     else:
                         with st.status(f"Đang xử lý khối {block_name}...", expanded=True):
                             ok, res_map, stats = process_pipeline(rows_run, f"{user_id}_{block_name}")
@@ -455,10 +453,8 @@ def main_ui():
                                 for idx, row in st.session_state['df_config'].iterrows():
                                     if row['Block_Name'] == block_name and row.get('Link dữ liệu lấy dữ liệu', '') in res_map:
                                         msg, rng = res_map[row.get('Link dữ liệu lấy dữ liệu')]
-                                        # Update kết quả
-                                        st.session_state['df_config'].at[idx, 'Kết quả'] = msg
+                                        if row['Trạng thái'] == "Chưa chốt & đang cập nhật": st.session_state['df_config'].at[idx, 'Kết quả'] = msg
                                         st.session_state['df_config'].at[idx, 'Dòng dữ liệu'] = rng
-                                
                                 save_data(st.session_state['df_config'], creds)
                                 st.success(f"✅ Xong! Xử lý: {stats['sources']} nguồn | Thêm: +{stats['rows']} dòng | Hết: {stats['time']}s")
                                 time.sleep(2); st.rerun()
