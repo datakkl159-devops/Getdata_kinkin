@@ -29,6 +29,7 @@ BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
 SHEET_LOG_NAME = "log_lanthucthi"
 SHEET_LOCK_NAME = "sys_lock"
+SHEET_SYS_CONFIG = "sys_config" # Tên sheet lưu cấu hình giờ chạy
 
 COL_LINK_SRC = "Link file nguồn"
 COL_LABEL_SRC = "Sheet nguồn"
@@ -139,14 +140,11 @@ def verify_access_fast(url, creds):
         return False, f"❌ Lỗi API: {e}"
     except Exception as e: return False, f"❌ Lỗi: {e}"
 
-# --- 5. LOGIC XỬ LÝ DỮ LIỆU (ĐÚNG SHEET ĐÃ CHỌN) ---
+# --- 5. LOGIC XỬ LÝ DỮ LIỆU ---
 def fetch_single_csv_safe(row_config, creds, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
-    
-    # LẤY TÊN SHEET NGUỒN (Quan trọng)
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
-    
     month_val = str(row_config.get('Tháng', ''))
     sheet_id = extract_id(link_src)
     
@@ -156,27 +154,25 @@ def fetch_single_csv_safe(row_config, creds, token):
     status_msg = ""
     target_gid = None
 
-    # BƯỚC 1: XÁC ĐỊNH GID CỦA SHEET CẦN LẤY
+    # BƯỚC 1: XÁC ĐỊNH GID
     try:
         gc = gspread.authorize(creds)
         sh_source = gc.open_by_key(sheet_id)
         
         if source_label:
-            # Nếu có tên sheet -> Tìm đúng sheet đó
             try:
                 wks_source = sh_source.worksheet(source_label)
                 target_gid = wks_source.id
             except gspread.exceptions.WorksheetNotFound:
                 return None, sheet_id, f"❌ Không tìm thấy sheet tên: '{source_label}'"
         else:
-            # Nếu không điền tên -> Lấy sheet đầu tiên
             wks_source = sh_source.sheet1
             target_gid = wks_source.id
             
     except Exception as e:
         return None, sheet_id, f"Lỗi truy cập file nguồn: {str(e)}"
 
-    # BƯỚC 2: TẢI DỮ LIỆU (Ưu tiên CSV với GID chuẩn)
+    # BƯỚC 2: TẢI CSV
     if target_gid is not None:
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={target_gid}"
         headers = {'Authorization': f'Bearer {token}'}
@@ -187,10 +183,9 @@ def fetch_single_csv_safe(row_config, creds, token):
                 status_msg = f"Thành công (CSV - Sheet: {source_label if source_label else 'Đầu tiên'})"
         except: pass
 
-    # BƯỚC 3: FALLBACK API (Nếu CSV lỗi)
+    # BƯỚC 3: FALLBACK API
     if df is None or df.is_empty():
         try:
-            # Lúc này wks_source đã được xác định đúng ở Bước 1
             data = wks_source.get_all_values()
             if data and len(data) > 0:
                 headers = data[0]
@@ -225,10 +220,8 @@ def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, lin
         real_sheet_name = str(target_sheet_name).strip()
         if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
         
-        # --- LOGIC TẠO SHEET HOẶC MỞ SHEET ---
         try: wks = sh.worksheet(real_sheet_name)
         except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
-        # -------------------------------------
         
         token = creds.token 
         if not token:
@@ -328,7 +321,6 @@ def process_pipeline(rows_to_run, user_id):
             links_remove = []
             
             for row in group_rows:
-                # FIX: Truyền thêm biến 'creds' vào đây
                 df, sid, status = fetch_single_csv_safe(row, creds, token)
                 
                 src_link = row.get('Link dữ liệu lấy dữ liệu', '')
@@ -405,30 +397,36 @@ def main_ui():
         wks.update([df_save.columns.tolist()] + df_save.fillna('').values.tolist())
         st.toast("✅ Đã lưu cấu hình!", icon="💾")
 
+    # --- CẬP NHẬT: QUÉT CẢ 2 CỘT NGUỒN VÀ ĐÍCH ---
     def man_scan(df):
         errs = []
         for idx, row in df.iterrows():
-            link = str(row.get('Link dữ liệu lấy dữ liệu', ''))
-            if "docs.google.com" in link:
-                ok, msg = verify_access_fast(link, creds)
+            # Check Link Nguồn
+            link_src = str(row.get('Link dữ liệu lấy dữ liệu', ''))
+            if "docs.google.com" in link_src:
+                ok, msg = verify_access_fast(link_src, creds)
                 if not ok: 
-                    errs.append((row.get('STT'), link, msg))
+                    errs.append((row.get('STT'), "Nguồn", link_src, msg))
+            
+            # Check Link Đích
+            link_tgt = str(row.get('Link dữ liệu đích', ''))
+            if "docs.google.com" in link_tgt:
+                ok, msg = verify_access_fast(link_tgt, creds)
+                if not ok: 
+                    errs.append((row.get('STT'), "Đích", link_tgt, msg))
         return errs
 
     if 'df_config' not in st.session_state:
         with st.spinner("Đang tải..."): st.session_state['df_config'] = load_conf(creds)
 
-    # --- ĐOẠN FIX LỖI (CẬP NHẬT CHO CẢ 2 CỘT) ---
-    # Danh sách các cột cần đảm bảo là chuỗi
+    # --- FIX LỖI LIST -> STRING (CẢ 2 CỘT) ---
     cols_to_fix = ["Link dữ liệu lấy dữ liệu", "Link dữ liệu đích"]
-    
     if 'df_config' in st.session_state and st.session_state['df_config'] is not None:
         for col in cols_to_fix:
             if col in st.session_state['df_config'].columns:
                 st.session_state['df_config'][col] = st.session_state['df_config'][col].apply(
                     lambda x: ", ".join(map(str, x)) if isinstance(x, list) else (str(x) if pd.notna(x) else "")
                 )
-    # -------------------------------------------
 
     col_order = ["STT", "Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Hành động"]
     
@@ -465,26 +463,50 @@ def main_ui():
 
     st.divider()
     
+    # --- LOGIC LOAD CÀI ĐẶT HẸN GIỜ ---
+    saved_hour = 8
+    saved_freq = "1 ngày/1 lần"
     try:
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
-        wks_sys = sh.worksheet("sys_config")
+        try:
+            wks_sys = sh.worksheet(SHEET_SYS_CONFIG)
+        except:
+            # Tạo sheet sys_config nếu chưa có
+            wks_sys = sh.add_worksheet(SHEET_SYS_CONFIG, rows=10, cols=2)
+            wks_sys.update([["run_hour", "8"], ["run_freq", "1 ngày/1 lần"]])
+        
         data_conf = wks_sys.get_all_values()
-        saved_hour = 8; saved_freq = "1 ngày/1 lần"
         for r in data_conf:
-            if r[0] == "run_hour": saved_hour = int(r[1])
-            if r[0] == "run_freq": saved_freq = r[1]
+            if r and len(r) > 1:
+                if r[0] == "run_hour": saved_hour = int(r[1])
+                if r[0] == "run_freq": saved_freq = r[1]
     except: pass
 
     st.subheader("⏰ Cài Đặt Tự Động")
     c1, c2, c3 = st.columns(3)
-    with c1: new_freq = st.selectbox("Tần suất:", ["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"], index=["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"].index(saved_freq))
-    with c2: new_hour = st.slider("Giờ chạy (VN):", 0, 23, value=saved_hour)
+    with c1: 
+        new_freq = st.selectbox("Tần suất:", ["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"], index=["1 ngày/1 lần", "1 tuần/1 lần", "1 tháng/1 lần"].index(saved_freq))
+    with c2: 
+        new_hour = st.slider("Giờ chạy (VN):", 0, 23, value=saved_hour)
     with c3:
         st.write("")
+        # --- NÚT LƯU ĐÃ FIX LỖI ---
         if st.button("Lưu Cài Đặt"):
-            wks_sys.update("B2", str(saved_hour)); wks_sys.update("B3", saved_freq)
-            st.toast("Đã lưu!", icon="✅")
+            try:
+                gc = gspread.authorize(creds)
+                sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
+                wks_sys = sh.worksheet(SHEET_SYS_CONFIG)
+                
+                # Cập nhật giá trị MỚI (new_hour, new_freq) thay vì giá trị cũ
+                wks_sys.update("A1:B1", [["run_hour", str(new_hour)]])
+                wks_sys.update("A2:B2", [["run_freq", new_freq]])
+                
+                st.toast("✅ Đã lưu cài đặt mới!", icon="💾")
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Lỗi khi lưu: {str(e)}")
 
     st.divider()
     
@@ -518,13 +540,13 @@ def main_ui():
             errs = man_scan(edited_df)
             with scan_result_placeholder:
                 if errs:
-                    st.error(f"❌ Phát hiện {len(errs)} link chưa cấp quyền cho Bot!")
-                    st.info(f"👉 Hãy copy Email dưới đây và cấp quyền **Editor** cho các link bị lỗi:")
+                    st.error(f"❌ Phát hiện {len(errs)} lỗi quyền truy cập!")
+                    st.info(f"👉 Hãy copy Email bot và cấp quyền **Editor** (Chỉnh sửa) cho Link đích và **Viewer** (Xem) cho Link nguồn:")
                     st.code(BOT_EMAIL_DISPLAY, language="text")
-                    for stt, link, msg in errs:
-                        st.markdown(f"- **Dòng {stt}**: [Bấm vào đây để mở Sheet lỗi]({link}) | Lý do: {msg}")
+                    for stt, l_type, link, msg in errs:
+                        st.markdown(f"- **Dòng {stt} [{l_type}]**: [Mở Sheet]({link}) | Lỗi: {msg}")
                 else:
-                    st.success("✅ Tuyệt vời! Tất cả Link đều đã được cấp quyền.")
+                    st.success("✅ Tuyệt vời! Tất cả Link (Nguồn & Đích) đều hợp lệ.")
 
     with col_save:
         if st.button("💾 Lưu Cấu Hình"):
