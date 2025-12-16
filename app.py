@@ -29,8 +29,9 @@ SHEET_CONFIG_NAME = "luu_cau_hinh"
 SHEET_LOG_NAME = "log_lanthucthi"
 SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
+SHEET_LOG_GITHUB = "log_chay_auto_github"
 
-# Tên 3 cột hệ thống
+# Tên 3 cột hệ thống tự động thêm vào file đích
 COL_LINK_SRC = "Link file nguồn"
 COL_LABEL_SRC = "Sheet nguồn"
 COL_MONTH_SRC = "Tháng chốt"
@@ -152,6 +153,7 @@ def fetch_single_csv_safe(row_config, creds, token):
     status_msg = ""
     target_gid = None
 
+    # Tìm GID
     try:
         gc = gspread.authorize(creds)
         sh_source = gc.open_by_key(sheet_id)
@@ -167,6 +169,7 @@ def fetch_single_csv_safe(row_config, creds, token):
     except Exception as e:
         return None, sheet_id, f"Lỗi truy cập file nguồn: {str(e)}"
 
+    # Tải Data
     if target_gid is not None:
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={target_gid}"
         headers = {'Authorization': f'Bearer {token}'}
@@ -202,12 +205,10 @@ def fetch_single_csv_safe(row_config, creds, token):
         
     return None, sheet_id, "Không lấy được dữ liệu"
 
-# --- HÀM MỚI: QUÉT LẠI DÒNG THỰC TẾ (REALTIME) ---
+# --- HÀM QUÉT LẠI DÒNG THỰC TẾ (REALTIME CHO CẢ FILE ĐÍCH) ---
 def scan_realtime_row_ranges(target_link, target_sheet_name, creds):
     """
-    Hàm này mở file đích, đọc toàn bộ cột "Link file nguồn" và tính lại vị trí dòng
-    cho TẤT CẢ các link có trong sheet đó.
-    Trả về dict: { "link_nguon_A": "2 - 100", "link_nguon_B": "101 - 500" }
+    Quét toàn bộ sheet đích để xác định vị trí dòng của TẤT CẢ các link nguồn có trong đó.
     """
     results = {}
     try:
@@ -222,8 +223,7 @@ def scan_realtime_row_ranges(target_link, target_sheet_name, creds):
         try: wks = sh.worksheet(real_sheet_name)
         except: return {}
 
-        # Lấy toàn bộ dữ liệu để tìm cột Link
-        # Lưu ý: get_all_values có thể hơi nặng nếu file cực lớn (>50k dòng), nhưng là cách chính xác nhất
+        # Lấy toàn bộ dữ liệu để tìm cột Link (Hơi nặng chút nhưng chính xác tuyệt đối)
         all_data = wks.get_all_values()
         if not all_data: return {}
 
@@ -231,12 +231,12 @@ def scan_realtime_row_ranges(target_link, target_sheet_name, creds):
         try:
             link_col_idx = headers.index(COL_LINK_SRC)
         except ValueError:
-            return {} # Không tìm thấy cột link nguồn
+            return {} 
 
-        # Duyệt qua từng dòng để ghi nhận vị trí
-        # Data bắt đầu từ dòng 2 (index 1)
-        temp_map = {} # link -> [min_row, max_row]
+        # Map tạm: link -> [min, max]
+        temp_map = {}
 
+        # Duyệt từ dòng 2 (index 1)
         for i, row in enumerate(all_data[1:], start=2):
             if len(row) > link_col_idx:
                 link_val = row[link_col_idx]
@@ -244,9 +244,9 @@ def scan_realtime_row_ranges(target_link, target_sheet_name, creds):
                     if link_val not in temp_map:
                         temp_map[link_val] = [i, i]
                     else:
-                        temp_map[link_val][1] = i # Cập nhật max_row liên tục
+                        temp_map[link_val][1] = i # Cập nhật max liên tục
         
-        # Chuyển đổi sang định dạng chuỗi "Start - End"
+        # Format kết quả
         for link, (start, end) in temp_map.items():
             results[link] = f"{start} - {end}"
             
@@ -315,7 +315,6 @@ def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
         # 2. GHI MỚI
         dfs_to_concat = []
         
-        # Căn chỉnh Header
         all_new_cols = set()
         for t in tasks_list:
             all_new_cols.update(t[0].columns)
@@ -377,7 +376,9 @@ def process_pipeline(rows_to_run, user_id):
             if not t_sheet: t_sheet = "Tong_Hop_Data"
             grouped_tasks[(t_link, t_sheet)].append(row)
 
-        results_map = {} # {link_nguon: (Msg, Range)}
+        # Dictionary chứa TẤT CẢ các range tìm thấy (cả cũ và mới)
+        global_results_map = {} 
+        
         all_success = True
         log_entries = []
         tz_vn = pytz.timezone('Asia/Ho_Chi_Minh')
@@ -386,7 +387,7 @@ def process_pipeline(rows_to_run, user_id):
         for (target_link, target_sheet), group_rows in grouped_tasks.items():
             if not target_link: continue
             
-            # 1. Tải và xử lý dữ liệu
+            # 1. Tải Data
             tasks_list = []
             for row in group_rows:
                 df, sid, status = fetch_single_csv_safe(row, creds, token)
@@ -395,47 +396,68 @@ def process_pipeline(rows_to_run, user_id):
                 if df is not None:
                     tasks_list.append((df, src_link))
                 else:
-                    results_map[src_link] = ("Lỗi tải/Quyền", "")
+                    global_results_map[src_link] = ("Lỗi tải/Quyền", "")
                     log_entries.append([
                         time_now, str(row.get('Ngày chốt', '')), str(row.get('Tháng', '')),
                         user_id, src_link, target_link, target_sheet,
                         row.get('Tên sheet nguồn dữ liệu gốc', ''), "Lỗi tải", "0", ""
                     ])
 
+            # 2. Ghi Data (Nếu có)
+            msg_update = ""
+            success_update = True
             if tasks_list:
-                # 2. Ghi dữ liệu vào Sheet
-                success, msg = smart_update_safe(tasks_list, target_link, target_sheet, creds)
-                
-                # 3. QUÉT LẠI REALTIME (QUAN TRỌNG)
-                # Sau khi ghi xong, quét lại toàn bộ sheet để lấy số dòng mới nhất của TẤT CẢ các link
-                # (Kể cả những link không nằm trong lần chạy này nhưng có trong sheet đích)
-                realtime_ranges = scan_realtime_row_ranges(target_link, target_sheet, creds)
+                success_update, msg_update = smart_update_safe(tasks_list, target_link, target_sheet, creds)
+                if not success_update: 
+                    all_success = False
+            
+            # 3. QUÉT REALTIME TOÀN BỘ SHEET ĐÍCH (Kể cả file cũ)
+            # Đây là bước quan trọng để lấy range cho cả các dòng "Đã chốt"
+            realtime_ranges = scan_realtime_row_ranges(target_link, target_sheet, creds)
+            
+            # Gộp kết quả quét vào map tổng
+            # realtime_ranges: { "link_src_1": "2-100", "link_src_2": "101-500" ... }
+            for link, rng in realtime_ranges.items():
+                # Lưu vào map tổng để lát nữa update UI
+                if link not in global_results_map:
+                    global_results_map[link] = ("Cập nhật lại", rng)
+                else:
+                    # Nếu link này vừa chạy xong (đã có status lỗi/thành công), chỉ update range
+                    current_msg = global_results_map[link][0]
+                    global_results_map[link] = (current_msg, rng)
 
-                for df, s_link in tasks_list:
-                    original_row = next((r for r in group_rows if r.get('Link dữ liệu lấy dữ liệu') == s_link), {})
-                    
-                    # Lấy range từ kết quả quét realtime
-                    rng = realtime_ranges.get(s_link, "")
-                    status_str = "Thành công" if success else f"Lỗi Ghi: {msg}"
-                    
-                    log_entries.append([
-                        time_now, str(original_row.get('Ngày chốt', '')), str(original_row.get('Tháng', '')),
-                        user_id, s_link, target_link, target_sheet,
-                        original_row.get('Tên sheet nguồn dữ liệu gốc', ''), 
-                        status_str,
-                        str(df.height),
-                        rng 
-                    ])
-                    results_map[s_link] = (msg if not success else "Thành công", rng)
+            # 4. Ghi Log chi tiết cho các dòng VỪA CHẠY
+            for row in group_rows:
+                s_link = row.get('Link dữ liệu lấy dữ liệu', '')
+                # Nếu task list có chạy thì dùng status update, ko thì thôi
+                status_str = "Thành công" if success_update else f"Lỗi: {msg_update}"
                 
-                if not success: all_success = False
-            else:
-                if not results_map: all_success = False
+                # Tìm range trong realtime map
+                final_range = realtime_ranges.get(s_link, "")
+                
+                # Chỉ ghi log nếu link này nằm trong danh sách cần chạy
+                # (Vì realtime_ranges chứa cả link cũ ko liên quan)
+                if any(t[1] == s_link for t in tasks_list) or (s_link in global_results_map and "Lỗi" in global_results_map[s_link][0]):
+                     # Tính chiều cao dòng (ước lượng)
+                    height = "0"
+                    for df, sl in tasks_list:
+                        if sl == s_link: height = str(df.height)
+
+                    log_entries.append([
+                        time_now, str(row.get('Ngày chốt', '')), str(row.get('Tháng', '')),
+                        user_id, s_link, target_link, target_sheet,
+                        row.get('Tên sheet nguồn dữ liệu gốc', ''), 
+                        status_str,
+                        height,
+                        final_range 
+                    ])
+                    # Update lại status chuẩn cho map tổng
+                    global_results_map[s_link] = (status_str, final_range)
         
         history_id = st.secrets["gcp_service_account"]["history_sheet_id"]
         write_detailed_log(creds, history_id, log_entries)
         
-        return all_success, results_map
+        return all_success, global_results_map
 
     finally:
         set_system_lock(creds, user_id, lock=False)
@@ -588,19 +610,25 @@ def main_ui():
                 with st.status(f"Đang xử lý {len(rows_run)} nguồn...", expanded=True):
                     # all_ok: Boolean
                     # results_map: {link_nguon: (Message, RangeString)}
+                    # results_map chứa kết quả của TOÀN BỘ file đích, ko chỉ dòng vừa chạy
                     all_ok, results_map = process_pipeline(rows_run, user_id)
                     
                     if results_map:
                         st.success("Đã chạy xong.")
-                        # Cập nhật kết quả lên bảng
+                        # Cập nhật kết quả lên bảng cho TẤT CẢ các dòng khớp link
                         for idx, row in edited_df.iterrows():
                             s_link = row.get('Link dữ liệu lấy dữ liệu', '')
+                            # Nếu link này có trong kết quả quét (dù nó là đã chốt hay chưa chốt)
                             if s_link in results_map:
                                 msg, rng = results_map[s_link]
-                                edited_df.at[idx, 'Kết quả'] = msg
+                                
+                                # Nếu là dòng vừa chạy -> cập nhật message trạng thái
+                                if row['Trạng thái'] == "Chưa chốt & đang cập nhật":
+                                    edited_df.at[idx, 'Kết quả'] = msg
+                                
+                                # CẬP NHẬT RANGE CHO TẤT CẢ (KỂ CẢ ĐÃ CHỐT)
                                 edited_df.at[idx, 'Dòng dữ liệu'] = rng
                         
-                        # Lưu lại ngay lập tức
                         save_conf(edited_df, creds)
                         st.session_state['df_config'] = edited_df
                         time.sleep(1)
