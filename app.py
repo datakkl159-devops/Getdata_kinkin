@@ -305,8 +305,11 @@ def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
         return True, "Thành công (Không có data mới)"
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}"
 
+# --- Thay thế toàn bộ hàm process_pipeline trong app.py bằng hàm dưới đây ---
+
 def process_pipeline(rows_to_run, user_id):
     creds = get_creds()
+    # Kiểm tra khóa hệ thống
     is_locked, locking_user, lock_time = get_system_lock(creds)
     if is_locked and locking_user != user_id and "AutoAll" not in user_id:
         return False, f"HỆ THỐNG ĐANG BẬN! {locking_user} đang chạy từ {lock_time}."
@@ -319,12 +322,37 @@ def process_pipeline(rows_to_run, user_id):
         token = creds.token
         
         grouped_tasks = defaultdict(list)
+        
+        # --- BƯỚC 1: LÀM SẠCH DỮ LIỆU ĐẦU VÀO (QUAN TRỌNG) ---
         for row in rows_to_run:
-            t_link = row.get('Link dữ liệu đích', '')
+            # 1. Xử lý Link Đích (Target Link) - Sửa lỗi unhashable type list
+            raw_t = row.get('Link dữ liệu đích', '')
+            if isinstance(raw_t, list):
+                t_link = str(raw_t[0]).strip() if raw_t else ""
+            else:
+                t_link = str(raw_t).strip()
+            
+            # Cập nhật lại vào row để chắc chắn
+            row['Link dữ liệu đích'] = t_link 
+
+            # 2. Xử lý Link Nguồn (Source Link) - Đề phòng lỗi tương tự
+            raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
+            if isinstance(raw_s, list):
+                s_link = str(raw_s[0]).strip() if raw_s else ""
+            else:
+                s_link = str(raw_s).strip()
+            
+            # Cập nhật ngược lại vào row để các hàm fetch/log dùng đúng string
+            row['Link dữ liệu lấy dữ liệu'] = s_link
+
+            # Lấy tên sheet đích
             t_sheet = str(row.get('Tên sheet dữ liệu đích', '')).strip()
             if not t_sheet: t_sheet = "Tong_Hop_Data"
+            
+            # Gom nhóm task (Lúc này t_link đã chắc chắn là string -> Hết lỗi)
             grouped_tasks[(t_link, t_sheet)].append(row)
 
+        # --- BƯỚC 2: THỰC THI ---
         global_results_map = {} 
         all_success = True
         log_entries = []
@@ -334,11 +362,15 @@ def process_pipeline(rows_to_run, user_id):
         for (target_link, target_sheet), group_rows in grouped_tasks.items():
             if not target_link: continue
             
+            # A. Tải và xử lý dữ liệu từ các nguồn
             tasks_list = []
             for row in group_rows:
+                # Gọi hàm tải (lúc này row['Link dữ liệu lấy dữ liệu'] đã sạch)
                 df, sid, status = fetch_single_csv_safe(row, creds, token)
-                src_link = row.get('Link dữ liệu lấy dữ liệu', '')
-                if df is not None: tasks_list.append((df, src_link))
+                src_link = row['Link dữ liệu lấy dữ liệu'] # Lấy trực tiếp từ row đã làm sạch
+                
+                if df is not None:
+                    tasks_list.append((df, src_link))
                 else:
                     global_results_map[src_link] = ("Lỗi tải/Quyền", "")
                     log_entries.append([
@@ -347,25 +379,31 @@ def process_pipeline(rows_to_run, user_id):
                         row.get('Tên sheet nguồn dữ liệu gốc', ''), "Lỗi tải", "0", ""
                     ])
 
+            # B. Ghi dữ liệu vào file đích
             msg_update = ""
             success_update = True
             if tasks_list:
                 success_update, msg_update = smart_update_safe(tasks_list, target_link, target_sheet, creds)
                 if not success_update: all_success = False
             
+            # C. Quét Realtime (Đếm dòng thực tế)
             realtime_ranges = scan_realtime_row_ranges(target_link, target_sheet, creds)
             
+            # Cập nhật kết quả quét vào map tổng
             for link, rng in realtime_ranges.items():
-                if link not in global_results_map: global_results_map[link] = ("Cập nhật lại", rng)
+                if link not in global_results_map:
+                    global_results_map[link] = ("Cập nhật lại", rng)
                 else:
                     current_msg = global_results_map[link][0]
                     global_results_map[link] = (current_msg, rng)
 
+            # D. Tạo Log và Update Status hiển thị
             for row in group_rows:
-                s_link = row.get('Link dữ liệu lấy dữ liệu', '')
+                s_link = row['Link dữ liệu lấy dữ liệu'] # Lấy link đã làm sạch
                 status_str = "Thành công" if success_update else f"Lỗi: {msg_update}"
                 final_range = realtime_ranges.get(s_link, "")
                 
+                # Logic log: Chỉ log nếu vừa chạy xong hoặc trước đó có lỗi
                 if any(t[1] == s_link for t in tasks_list) or (s_link in global_results_map and "Lỗi" in global_results_map[s_link][0]):
                     height = "0"
                     for df, sl in tasks_list:
@@ -375,13 +413,19 @@ def process_pipeline(rows_to_run, user_id):
                         time_now, str(row.get('Ngày chốt', '')), str(row.get('Tháng', '')),
                         user_id, s_link, target_link, target_sheet,
                         row.get('Tên sheet nguồn dữ liệu gốc', ''), 
-                        status_str, height, final_range 
+                        status_str,
+                        height,
+                        final_range 
                     ])
+                    # Cập nhật map kết quả trả về cho UI
                     global_results_map[s_link] = (status_str, final_range)
         
+        # Ghi log vào Sheet
         history_id = st.secrets["gcp_service_account"]["history_sheet_id"]
         write_detailed_log(creds, history_id, log_entries)
+        
         return all_success, global_results_map
+
     finally:
         set_system_lock(creds, user_id, lock=False)
 
@@ -640,3 +684,4 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
