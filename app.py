@@ -38,7 +38,7 @@ DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- 2. HÀM XÁC THỰC & KẾT NỐI (LOGIC CŨ) ---
+# --- 2. HÀM XÁC THỰC & KẾT NỐI ---
 def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
@@ -81,7 +81,7 @@ def extract_id(url):
         except: return None
     return None
 
-# --- 3. HỆ THỐNG KHÓA & LOG (LOGIC CŨ) ---
+# --- 3. HỆ THỐNG KHÓA & LOG ---
 def get_system_lock(creds):
     try:
         gc = gspread.authorize(creds)
@@ -124,7 +124,7 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- 4. HÀM QUÉT QUYỀN (LOGIC CŨ) ---
+# --- 4. HÀM QUÉT QUYỀN & TẢI DATA ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi/Sai định dạng"
@@ -139,9 +139,9 @@ def verify_access_fast(url, creds):
         return False, f"❌ Lỗi API: {e}"
     except Exception as e: return False, f"❌ Lỗi: {e}"
 
-# --- 5. LOGIC XỬ LÝ DỮ LIỆU (LOGIC CŨ - QUAN TRỌNG) ---
 def fetch_single_csv_safe(row_config, creds, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
+    # Lấy link đã được làm sạch ở process_pipeline
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
     month_val = str(row_config.get('Tháng', ''))
@@ -305,11 +305,9 @@ def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
         return True, "Thành công (Không có data mới)"
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}"
 
-# --- Thay thế toàn bộ hàm process_pipeline trong app.py bằng hàm dưới đây ---
-
+# --- 5. LOGIC CHÍNH (PIPELINE) - ĐÃ SỬA LỖI LIST vs STRING ---
 def process_pipeline(rows_to_run, user_id):
     creds = get_creds()
-    # Kiểm tra khóa hệ thống
     is_locked, locking_user, lock_time = get_system_lock(creds)
     if is_locked and locking_user != user_id and "AutoAll" not in user_id:
         return False, f"HỆ THỐNG ĐANG BẬN! {locking_user} đang chạy từ {lock_time}."
@@ -323,33 +321,27 @@ def process_pipeline(rows_to_run, user_id):
         
         grouped_tasks = defaultdict(list)
         
-        # --- BƯỚC 1: LÀM SẠCH DỮ LIỆU ĐẦU VÀO (QUAN TRỌNG) ---
+        # --- BƯỚC 1: LÀM SẠCH DỮ LIỆU ĐẦU VÀO ---
         for row in rows_to_run:
-            # 1. Xử lý Link Đích (Target Link) - Sửa lỗi unhashable type list
+            # Sửa lỗi unhashable type list cho Link Đích
             raw_t = row.get('Link dữ liệu đích', '')
             if isinstance(raw_t, list):
                 t_link = str(raw_t[0]).strip() if raw_t else ""
             else:
                 t_link = str(raw_t).strip()
-            
-            # Cập nhật lại vào row để chắc chắn
-            row['Link dữ liệu đích'] = t_link 
+            row['Link dữ liệu đích'] = t_link # Cập nhật lại row
 
-            # 2. Xử lý Link Nguồn (Source Link) - Đề phòng lỗi tương tự
+            # Sửa lỗi cho Link Nguồn
             raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
             if isinstance(raw_s, list):
                 s_link = str(raw_s[0]).strip() if raw_s else ""
             else:
                 s_link = str(raw_s).strip()
-            
-            # Cập nhật ngược lại vào row để các hàm fetch/log dùng đúng string
-            row['Link dữ liệu lấy dữ liệu'] = s_link
+            row['Link dữ liệu lấy dữ liệu'] = s_link # Cập nhật lại row
 
-            # Lấy tên sheet đích
             t_sheet = str(row.get('Tên sheet dữ liệu đích', '')).strip()
             if not t_sheet: t_sheet = "Tong_Hop_Data"
             
-            # Gom nhóm task (Lúc này t_link đã chắc chắn là string -> Hết lỗi)
             grouped_tasks[(t_link, t_sheet)].append(row)
 
         # --- BƯỚC 2: THỰC THI ---
@@ -362,12 +354,11 @@ def process_pipeline(rows_to_run, user_id):
         for (target_link, target_sheet), group_rows in grouped_tasks.items():
             if not target_link: continue
             
-            # A. Tải và xử lý dữ liệu từ các nguồn
+            # A. Tải data
             tasks_list = []
             for row in group_rows:
-                # Gọi hàm tải (lúc này row['Link dữ liệu lấy dữ liệu'] đã sạch)
                 df, sid, status = fetch_single_csv_safe(row, creds, token)
-                src_link = row['Link dữ liệu lấy dữ liệu'] # Lấy trực tiếp từ row đã làm sạch
+                src_link = row['Link dữ liệu lấy dữ liệu']
                 
                 if df is not None:
                     tasks_list.append((df, src_link))
@@ -379,31 +370,28 @@ def process_pipeline(rows_to_run, user_id):
                         row.get('Tên sheet nguồn dữ liệu gốc', ''), "Lỗi tải", "0", ""
                     ])
 
-            # B. Ghi dữ liệu vào file đích
+            # B. Ghi data
             msg_update = ""
             success_update = True
             if tasks_list:
                 success_update, msg_update = smart_update_safe(tasks_list, target_link, target_sheet, creds)
                 if not success_update: all_success = False
             
-            # C. Quét Realtime (Đếm dòng thực tế)
+            # C. Quét Realtime
             realtime_ranges = scan_realtime_row_ranges(target_link, target_sheet, creds)
             
-            # Cập nhật kết quả quét vào map tổng
             for link, rng in realtime_ranges.items():
-                if link not in global_results_map:
-                    global_results_map[link] = ("Cập nhật lại", rng)
+                if link not in global_results_map: global_results_map[link] = ("Cập nhật lại", rng)
                 else:
                     current_msg = global_results_map[link][0]
                     global_results_map[link] = (current_msg, rng)
 
-            # D. Tạo Log và Update Status hiển thị
+            # D. Log
             for row in group_rows:
-                s_link = row['Link dữ liệu lấy dữ liệu'] # Lấy link đã làm sạch
+                s_link = row['Link dữ liệu lấy dữ liệu']
                 status_str = "Thành công" if success_update else f"Lỗi: {msg_update}"
                 final_range = realtime_ranges.get(s_link, "")
                 
-                # Logic log: Chỉ log nếu vừa chạy xong hoặc trước đó có lỗi
                 if any(t[1] == s_link for t in tasks_list) or (s_link in global_results_map and "Lỗi" in global_results_map[s_link][0]):
                     height = "0"
                     for df, sl in tasks_list:
@@ -413,42 +401,41 @@ def process_pipeline(rows_to_run, user_id):
                         time_now, str(row.get('Ngày chốt', '')), str(row.get('Tháng', '')),
                         user_id, s_link, target_link, target_sheet,
                         row.get('Tên sheet nguồn dữ liệu gốc', ''), 
-                        status_str,
-                        height,
-                        final_range 
+                        status_str, height, final_range 
                     ])
-                    # Cập nhật map kết quả trả về cho UI
                     global_results_map[s_link] = (status_str, final_range)
         
-        # Ghi log vào Sheet
         history_id = st.secrets["gcp_service_account"]["history_sheet_id"]
         write_detailed_log(creds, history_id, log_entries)
-        
         return all_success, global_results_map
-
     finally:
         set_system_lock(creds, user_id, lock=False)
 
-
-# --- 6. CÁC HÀM QUẢN LÝ BLOCK MỚI ---
-
+# --- 6. CÁC HÀM QUẢN LÝ BLOCK ---
 def man_scan(df):
     creds = get_creds()
     errs = []
     for idx, row in df.iterrows():
-        link_src = str(row.get('Link dữ liệu lấy dữ liệu', ''))
+        # Xử lý list vs string cho link nguồn
+        raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
+        if isinstance(raw_s, list): link_src = str(raw_s[0]).strip() if raw_s else ""
+        else: link_src = str(raw_s).strip()
+
         if "docs.google.com" in link_src:
             ok, msg = verify_access_fast(link_src, creds)
             if not ok: errs.append((row.get('STT'), "Nguồn", link_src, f"{msg} -> Cần quyền XEM"))
         
-        link_tgt = str(row.get('Link dữ liệu đích', ''))
+        # Xử lý list vs string cho link đích
+        raw_t = row.get('Link dữ liệu đích', '')
+        if isinstance(raw_t, list): link_tgt = str(raw_t[0]).strip() if raw_t else ""
+        else: link_tgt = str(raw_t).strip()
+
         if "docs.google.com" in link_tgt:
             ok, msg = verify_access_fast(link_tgt, creds)
             if not ok: errs.append((row.get('STT'), "Đích", link_tgt, f"{msg} -> Cần quyền SỬA"))
     return errs
 
 def load_full_config(creds):
-    """Tải toàn bộ cấu hình (tất cả các block)"""
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
@@ -474,7 +461,6 @@ def load_full_config(creds):
     return df
 
 def save_block_config(df_current_ui, current_block_name, creds):
-    """Lưu cấu hình: Chỉ cập nhật các dòng thuộc Block hiện tại"""
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
@@ -528,7 +514,7 @@ def main_ui():
     
     st.title(f"⚙️ Tool Quản Lý Data (User: {user_id})")
     
-    # --- A. SIDEBAR: QUẢN LÝ KHỐI (BLOCKS) ---
+    # --- A. SIDEBAR: QUẢN LÝ KHỐI ---
     with st.sidebar:
         st.header("📦 Quản Lý Khối")
         
@@ -556,15 +542,12 @@ def main_ui():
             if len(unique_blocks) <= 1: st.error("Không thể xóa khối cuối cùng!")
             else:
                 df_remain = st.session_state['df_full_config'][st.session_state['df_full_config'][COL_BLOCK_NAME] != selected_block]
-                save_block_config(df_remain, "TEMP_DELETE", creds) # Hàm save này hơi trick, nó lấy phần bù
-                
-                # Manual save full override (An toàn nhất)
+                save_block_config(df_remain, "TEMP_DELETE", creds)
                 gc = gspread.authorize(creds)
                 sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
                 wks = sh.worksheet(SHEET_CONFIG_NAME)
                 wks.clear()
                 wks.update([df_remain.columns.tolist()] + df_remain.fillna('').values.tolist())
-                
                 del st.session_state['df_full_config']
                 st.rerun()
 
@@ -637,10 +620,15 @@ def main_ui():
                 with st.status(f"Đang xử lý {len(rows_run)} nguồn của {selected_block}...", expanded=True):
                     all_ok, results_map = process_pipeline(rows_run, user_id) 
                     
-                    if results_map:
+                    if isinstance(results_map, str): st.error(results_map)
+                    elif results_map:
                         st.success("Xong.")
+                        # UPDATE UI (Đã sửa lỗi list vs string)
                         for idx, row in edited_df.iterrows():
-                            s_link = row.get('Link dữ liệu lấy dữ liệu', '')
+                            raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
+                            if isinstance(raw_s, list): s_link = str(raw_s[0]).strip() if raw_s else ""
+                            else: s_link = str(raw_s).strip()
+                                
                             if s_link in results_map:
                                 msg, rng = results_map[s_link]
                                 if row['Trạng thái'] == "Chưa chốt & đang cập nhật": edited_df.at[idx, 'Kết quả'] = msg
@@ -684,4 +672,3 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
-
