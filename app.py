@@ -393,6 +393,7 @@ def process_pipeline(rows_to_run, user_id):
                 success_update, msg_update = smart_update_safe(tasks_list, target_link, target_sheet, creds)
                 if not success_update: all_success = False
             
+            # --- QUÉT REALTIME ---
             realtime_ranges = scan_realtime_row_ranges(target_link, target_sheet, creds)
             
             for link, rng in realtime_ranges.items():
@@ -491,16 +492,47 @@ def main_ui():
         except: pass
         return ["Chung"]
 
-    # --- KHỞI TẠO STATE AN TOÀN ---
+    # Load schedule for a specific group
+    def load_group_schedule(group_name):
+        default = {"hour": 8, "freq": "Hàng ngày"}
+        try:
+            gc = gspread.authorize(creds)
+            sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
+            wks_sys = sh.worksheet(SHEET_SYS_CONFIG)
+            
+            # Find the row for this group config
+            cell = wks_sys.find(f"cfg_{group_name}")
+            if cell:
+                val = wks_sys.cell(cell.row, cell.col + 1).value
+                return json.loads(val)
+        except: pass
+        return default
+
+    # Save schedule for a specific group
+    def save_group_schedule(group_name, hour, freq):
+        try:
+            gc = gspread.authorize(creds)
+            sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
+            wks_sys = sh.worksheet(SHEET_SYS_CONFIG)
+            
+            # Find or append
+            cell = wks_sys.find(f"cfg_{group_name}")
+            json_str = json.dumps({"hour": hour, "freq": freq})
+            
+            if cell:
+                wks_sys.update_cell(cell.row, cell.col + 1, json_str)
+            else:
+                wks_sys.append_row([f"cfg_{group_name}", json_str])
+            st.toast(f"✅ Đã lưu lịch chạy cho {group_name}", icon="⏰")
+        except Exception as e: st.error(f"Lỗi lưu lịch: {e}")
+
     if 'df_config' not in st.session_state:
         with st.spinner("Đang tải dữ liệu..."): 
             st.session_state['df_config'] = load_conf(creds)
             
-    # Tách riêng phần load group để tránh lỗi key
     if 'active_groups' not in st.session_state:
         st.session_state['active_groups'] = load_active_groups()
 
-    # FIX LIST->STRING
     cols_to_fix = ["Link dữ liệu lấy dữ liệu", "Link dữ liệu đích"]
     if 'df_config' in st.session_state and st.session_state['df_config'] is not None:
         for col in cols_to_fix:
@@ -509,8 +541,45 @@ def main_ui():
                     lambda x: ", ".join(map(str, x)) if isinstance(x, list) else (str(x) if pd.notna(x) else "")
                 )
 
+    # --- NÚT CHẠY TẤT CẢ (GLOBAL RUN) ---
+    if st.button("🚀 CHẠY TẤT CẢ CÁC KHỐI (Chưa chốt)", type="primary", use_container_width=True):
+        full_df = st.session_state['df_config']
+        rows_run = full_df[full_df['Trạng thái'] == "Chưa chốt & đang cập nhật"].to_dict('records')
+        rows_run = [r for r in rows_run if len(str(r.get('Link dữ liệu lấy dữ liệu', ''))) > 5]
+        
+        if not rows_run: st.warning("Không có dòng nào chưa chốt trong toàn hệ thống.")
+        else:
+            with st.status(f"Đang chạy toàn bộ hệ thống ({len(rows_run)} nguồn)...", expanded=True):
+                all_ok, results_map = process_pipeline(rows_run, user_id)
+                
+                if results_map:
+                    st.success("Hoàn tất chạy toàn bộ!")
+                    for idx, row in full_df.iterrows():
+                        s_link = row.get('Link dữ liệu lấy dữ liệu', '')
+                        if s_link in results_map:
+                            msg, rng = results_map[s_link]
+                            if row['Trạng thái'] == "Chưa chốt & đang cập nhật":
+                                full_df.at[idx, 'Kết quả'] = msg
+                            full_df.at[idx, 'Dòng dữ liệu'] = rng
+                    
+                    # Save logic helper
+                    gc = gspread.authorize(creds)
+                    sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
+                    wks = sh.worksheet(SHEET_CONFIG_NAME)
+                    df_save = full_df.copy()
+                    if 'STT' in df_save.columns: df_save = df_save.drop(columns=['STT'])
+                    if 'Ngày chốt' in df_save.columns: df_save['Ngày chốt'] = df_save['Ngày chốt'].astype(str).replace({'NaT': '', 'nan': '', 'None': ''})
+                    wks.clear()
+                    wks.update([df_save.columns.tolist()] + df_save.fillna('').values.tolist())
+                    
+                    st.session_state['df_config'] = full_df
+                    st.rerun()
+                else: st.error("Lỗi khi chạy.")
+
+    st.divider()
+
     # --- QUẢN LÝ KHỐI ---
-    with st.expander("🛠️ Quản lý Khối (Thêm/Xóa nhóm phần mềm)", expanded=False):
+    with st.expander("🛠️ Quản lý Khối (Thêm/Xóa)", expanded=False):
         c_add, c_del = st.columns(2)
         with c_add:
             new_grp = st.text_input("Tên khối mới:")
@@ -520,7 +589,6 @@ def main_ui():
                     save_active_groups(st.session_state['active_groups'])
                     st.rerun()
         with c_del:
-            # FIX LỖI KEY ERROR: Đảm bảo active_groups luôn tồn tại
             current_groups = st.session_state.get('active_groups', ["Chung"])
             del_grp = st.selectbox("Chọn khối để xóa:", [""] + current_groups)
             if st.button("🗑️ Xóa Khối"):
@@ -582,13 +650,14 @@ def main_ui():
                 key=f"editor_{group_name}"
             )
 
+            # Action Buttons
             c1, c2, c3 = st.columns([1, 1, 2])
             
             if c1.button(f"▶️ Chạy {group_name}", key=f"run_{group_name}", type="primary"):
                 rows_run = edited_sub_df[edited_sub_df['Trạng thái'] == "Chưa chốt & đang cập nhật"].to_dict('records')
                 rows_run = [r for r in rows_run if len(str(r.get('Link dữ liệu lấy dữ liệu', ''))) > 5]
                 
-                if not rows_run: st.warning("Không có dòng nào chưa chốt để chạy.")
+                if not rows_run: st.warning("Không có dòng nào chưa chốt.")
                 else:
                     with st.status(f"Đang xử lý khối {group_name}...", expanded=True):
                         all_ok, results_map = process_pipeline(rows_run, user_id)
@@ -606,7 +675,6 @@ def main_ui():
                             df_others = current_full_df[current_full_df['Nhóm'] != group_name]
                             edited_sub_df['Nhóm'] = group_name 
                             new_full_df = pd.concat([df_others, edited_sub_df], ignore_index=True)
-                            
                             new_full_df = new_full_df.reset_index(drop=True)
                             new_full_df['STT'] = range(1, len(new_full_df) + 1)
                             
@@ -636,37 +704,23 @@ def main_ui():
                 st.session_state['df_config'] = new_full_df
                 st.rerun()
 
-    st.divider()
-
-    # --- HẸN GIỜ ---
-    saved_hour = 8
-    saved_freq = "Hàng ngày"
-    try:
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
-        wks_sys = sh.worksheet(SHEET_SYS_CONFIG)
-        data_conf = wks_sys.get_all_values()
-        for r in data_conf:
-            if r and len(r) > 1:
-                if r[0] == "run_hour": saved_hour = int(r[1])
-                if r[0] == "run_freq": saved_freq = r[1]
-    except: pass
-
-    st.subheader("⏰ Cài Đặt Tự Động (Chạy tất cả các khối)")
-    c_f, c_h, c_s = st.columns(3)
-    list_freq = ["Hàng ngày", "Hàng tuần", "Hàng tháng"]
-    if saved_freq not in list_freq: saved_freq = "Hàng ngày"
-
-    with c_f: new_freq = st.selectbox("Tần suất:", list_freq, index=list_freq.index(saved_freq))
-    with c_h: new_hour = st.slider("Giờ chạy (VN):", 0, 23, value=saved_hour)
-    with c_s:
-        st.write("")
-        if st.button("Lưu Cài Đặt Hẹn Giờ"):
-            try:
-                wks_sys.update("A1:B1", [["run_hour", str(new_hour)]])
-                wks_sys.update("A2:B2", [["run_freq", new_freq]])
-                st.toast("✅ Đã lưu hẹn giờ!", icon="💾")
-            except: st.error("Lỗi lưu hẹn giờ")
+            # --- SCHEDULE SECTION (INSIDE BLOCK) ---
+            st.divider()
+            st.caption(f"⏰ Hẹn giờ chạy tự động cho: {group_name}")
+            
+            # Load current config for this group
+            sched = load_group_schedule(group_name)
+            list_freq = ["Hàng ngày", "Hàng tuần", "Hàng tháng"]
+            
+            c_f, c_h, c_s = st.columns(3)
+            with c_f: 
+                grp_freq = st.selectbox("Tần suất:", list_freq, index=list_freq.index(sched.get("freq", "Hàng ngày")), key=f"freq_{group_name}")
+            with c_h: 
+                grp_hour = st.slider("Giờ chạy (VN):", 0, 23, value=int(sched.get("hour", 8)), key=f"hour_{group_name}")
+            with c_s:
+                st.write("")
+                if st.button("Lưu Hẹn Giờ", key=f"save_sched_{group_name}"):
+                    save_group_schedule(group_name, grp_hour, grp_freq)
 
 if __name__ == "__main__":
     main_ui()
