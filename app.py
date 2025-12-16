@@ -33,7 +33,7 @@ SHEET_LOG_GITHUB = "log_chay_auto_github"
 COL_LINK_SRC = "Link file nguồn"
 COL_LABEL_SRC = "Sheet nguồn"
 COL_MONTH_SRC = "Tháng chốt"
-COL_BLOCK_NAME = "Block_Name" # Cột định danh khối
+COL_BLOCK_NAME = "Block_Name"
 DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
@@ -124,7 +124,7 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- 4. HÀM QUÉT QUYỀN & TẢI DATA ---
+# --- 4. HÀM QUÉT QUYỀN & TẢI DATA (GIỮ NGUYÊN CSV NHƯNG KHÔNG ĐỔI TYPE) ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi/Sai định dạng"
@@ -141,7 +141,6 @@ def verify_access_fast(url, creds):
 
 def fetch_single_csv_safe(row_config, creds, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
-    # Lấy link đã được làm sạch ở process_pipeline
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
     month_val = str(row_config.get('Tháng', ''))
@@ -174,11 +173,19 @@ def fetch_single_csv_safe(row_config, creds, token):
         try:
             response = requests.get(url, headers=headers, timeout=20)
             if response.status_code == 200:
+                # --- CHÌA KHÓA QUAN TRỌNG: infer_schema_length=0 ---
+                # Tham số này bắt buộc Polars đọc TẤT CẢ các cột là String (Văn bản)
+                # Nó sẽ không tự động đoán số hay ngày tháng -> Giữ nguyên số 0 đầu
                 df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
+                
+                # Double check: Ép kiểu String một lần nữa cho chắc chắn
+                df = df.select(pl.all().cast(pl.Utf8))
+                
                 status_msg = f"Thành công"
         except: pass
 
     if df is None or df.is_empty():
+        # Fallback nếu CSV lỗi (vẫn ép kiểu string)
         try:
             data = wks_source.get_all_values()
             if data and len(data) > 0:
@@ -187,7 +194,7 @@ def fetch_single_csv_safe(row_config, creds, token):
                 if rows:
                     df = pl.DataFrame(rows, schema=headers, orient="row")
                     df = df.select(pl.all().cast(pl.Utf8))
-                    status_msg = f"Thành công"
+                    status_msg = f"Thành công (Fallback)"
                 else: status_msg = "Sheet rỗng"
             else: status_msg = "Sheet rỗng"
         except Exception as e:
@@ -272,7 +279,9 @@ def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
 
         dfs_to_concat = []
         all_new_cols = set()
-        for t in tasks_list: all_new_cols.update(t[0].columns)
+        for t in tasks_list: 
+            if t[0] is not None and not t[0].is_empty():
+                all_new_cols.update(t[0].columns)
         all_new_cols = list(all_new_cols)
 
         if not existing_headers:
@@ -289,9 +298,17 @@ def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
             else: final_headers = existing_headers
 
         for df, src_link in tasks_list:
-            pdf = df.to_pandas().fillna('')
-            pdf_aligned = pdf.reindex(columns=final_headers, fill_value="")
-            dfs_to_concat.append(pdf_aligned)
+            if df is not None and not df.is_empty():
+                # --- CHUYỂN ĐỔI AN TOÀN ---
+                # Chuyển sang pandas
+                pdf = df.to_pandas()
+                # ÉP KIỂU STRING TUYỆT ĐỐI 
+                # (Ngăn chặn pandas tự đoán số khi ghi)
+                pdf = pdf.astype(str)
+                pdf = pdf.replace(['nan', 'None', '<NA>', 'null'], '')
+                
+                pdf_aligned = pdf.reindex(columns=final_headers, fill_value="")
+                dfs_to_concat.append(pdf_aligned)
 
         if dfs_to_concat:
             final_pdf = pd.concat(dfs_to_concat, ignore_index=True)
@@ -321,22 +338,15 @@ def process_pipeline(rows_to_run, user_id):
         
         grouped_tasks = defaultdict(list)
         
-        # --- BƯỚC 1: LÀM SẠCH DỮ LIỆU ĐẦU VÀO ---
         for row in rows_to_run:
-            # Sửa lỗi unhashable type list cho Link Đích
             raw_t = row.get('Link dữ liệu đích', '')
-            if isinstance(raw_t, list):
-                t_link = str(raw_t[0]).strip() if raw_t else ""
-            else:
-                t_link = str(raw_t).strip()
+            if isinstance(raw_t, list): t_link = str(raw_t[0]).strip() if raw_t else ""
+            else: t_link = str(raw_t).strip()
             row['Link dữ liệu đích'] = t_link 
 
-            # Sửa lỗi cho Link Nguồn
             raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
-            if isinstance(raw_s, list):
-                s_link = str(raw_s[0]).strip() if raw_s else ""
-            else:
-                s_link = str(raw_s).strip()
+            if isinstance(raw_s, list): s_link = str(raw_s[0]).strip() if raw_s else ""
+            else: s_link = str(raw_s).strip()
             row['Link dữ liệu lấy dữ liệu'] = s_link 
 
             t_sheet = str(row.get('Tên sheet dữ liệu đích', '')).strip()
@@ -344,7 +354,6 @@ def process_pipeline(rows_to_run, user_id):
             
             grouped_tasks[(t_link, t_sheet)].append(row)
 
-        # --- BƯỚC 2: THỰC THI ---
         global_results_map = {} 
         all_success = True
         log_entries = []
@@ -354,7 +363,6 @@ def process_pipeline(rows_to_run, user_id):
         for (target_link, target_sheet), group_rows in grouped_tasks.items():
             if not target_link: continue
             
-            # A. Tải data
             tasks_list = []
             for row in group_rows:
                 df, sid, status = fetch_single_csv_safe(row, creds, token)
@@ -370,14 +378,12 @@ def process_pipeline(rows_to_run, user_id):
                         row.get('Tên sheet nguồn dữ liệu gốc', ''), "Lỗi tải", "0", ""
                     ])
 
-            # B. Ghi data
             msg_update = ""
             success_update = True
             if tasks_list:
                 success_update, msg_update = smart_update_safe(tasks_list, target_link, target_sheet, creds)
                 if not success_update: all_success = False
             
-            # C. Quét Realtime
             realtime_ranges = scan_realtime_row_ranges(target_link, target_sheet, creds)
             
             for link, rng in realtime_ranges.items():
@@ -386,7 +392,6 @@ def process_pipeline(rows_to_run, user_id):
                     current_msg = global_results_map[link][0]
                     global_results_map[link] = (current_msg, rng)
 
-            # D. Log
             for row in group_rows:
                 s_link = row['Link dữ liệu lấy dữ liệu']
                 status_str = "Thành công" if success_update else f"Lỗi: {msg_update}"
@@ -476,10 +481,8 @@ def save_block_config(df_current_ui, current_block_name, creds):
     
     df_final = pd.concat([df_other_blocks, df_to_save], ignore_index=True)
     
-    # --- FIX API Error: Ép kiểu toàn bộ về string trước khi lưu ---
     df_final = df_final.astype(str)
     df_final = df_final.replace(['nan', 'None', '<NA>'], '')
-    # -----------------------------------------------------------
 
     wks.clear()
     wks.update([df_final.columns.tolist()] + df_final.values.tolist())
@@ -546,8 +549,6 @@ def main_ui():
             else:
                 df_remain = st.session_state['df_full_config'][st.session_state['df_full_config'][COL_BLOCK_NAME] != selected_block]
                 save_block_config(df_remain, "TEMP_DELETE", creds)
-                
-                # Cập nhật cache local để không phải load lại từ server
                 st.session_state['df_full_config'] = df_remain
                 st.rerun()
 
@@ -624,7 +625,6 @@ def main_ui():
                     elif results_map:
                         st.success("Xong.")
                         for idx, row in edited_df.iterrows():
-                            # Fix lỗi so sánh list vs string
                             raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
                             if isinstance(raw_s, list): s_link = str(raw_s[0]).strip() if raw_s else ""
                             else: s_link = str(raw_s).strip()
