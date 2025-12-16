@@ -1,289 +1,60 @@
+import utils
 import pandas as pd
-import polars as pl
-import requests
-import io
-import gspread
-import os
-import json
-import time
-from datetime import datetime, timedelta
-from google.oauth2 import service_account
-from gspread_dataframe import get_as_dataframe
-import pytz
-from collections import defaultdict
+from datetime import datetime
 
-SHEET_CONFIG_NAME = "luu_cau_hinh" 
-SHEET_AUTO_LOG_NAME = "log_chay_auto_github"
-SHEET_LOCK_NAME = "sys_lock"
-
-COL_LINK_SRC = "Link file nguồn"
-COL_LABEL_SRC = "Sheet nguồn"
-COL_MONTH_SRC = "Tháng chốt"
-
-def get_creds():
-    creds_json = os.environ.get("GCP_SERVICE_ACCOUNT")
-    if not creds_json: return None
+def run_auto_bot():
+    print("--- AUTO BOT START ---")
     try:
-        creds_info = json.loads(creds_json)
-        if isinstance(creds_info, str): creds_info = json.loads(creds_info)
-        return service_account.Credentials.from_service_account_info(
-            creds_info, 
-            scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-        )
-    except: return None
-
-def extract_id(url):
-    if url and "docs.google.com" in str(url):
-        try: return url.split("/d/")[1].split("/")[0]
-        except: return None
-    return None
-
-def write_auto_log(creds, history_sheet_id, status, message):
-    try:
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(history_sheet_id)
-        try: wks = sh.worksheet(SHEET_AUTO_LOG_NAME)
-        except: 
-            wks = sh.add_worksheet(SHEET_AUTO_LOG_NAME, rows=1000, cols=4)
-            wks.append_row(["Thời gian (VN)", "Trạng thái", "Chi tiết", "Ghi chú"])
-        tz = pytz.timezone('Asia/Ho_Chi_Minh')
-        wks.append_row([datetime.now(tz).strftime("%d/%m/%Y %H:%M:%S"), status, message, "GitHub Action"])
-    except: pass
-
-def get_system_lock(creds, history_id):
-    try:
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(history_id)
-        try: wks = sh.worksheet(SHEET_LOCK_NAME)
-        except: return False, "", ""
-        val = wks.cell(2, 1).value
-        user = wks.cell(2, 2).value
-        time_str = wks.cell(2, 3).value
-        if val == "TRUE":
-            try:
-                if (datetime.now() - datetime.strptime(time_str, "%d/%m/%Y %H:%M:%S")).total_seconds() > 1800: return False, "", ""
-            except: pass
-            return True, user, time_str
-        return False, "", ""
-    except: return False, "", ""
-
-def set_system_lock(creds, history_id, user_id, lock=True):
-    try:
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(history_id)
-        try: wks = sh.worksheet(SHEET_LOCK_NAME)
-        except: wks = sh.add_worksheet(SHEET_LOCK_NAME, rows=10, cols=5)
-        now_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        wks.update("A2:C2", [["TRUE", user_id, now_str]] if lock else [["FALSE", "", ""]])
-    except: pass
-
-def check_is_run_time(creds, history_sheet_id):
-    try:
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(history_sheet_id)
-        try: wks = sh.worksheet("sys_config")
-        except: return datetime.now(pytz.timezone('Asia/Ho_Chi_Minh')).hour == 8
-        records = wks.get_all_values()
-        conf = {r[0]: r[1] for r in records if len(r) > 1}
-        
-        scheduled_hour = int(conf.get("run_hour", "8"))
-        run_freq = conf.get("run_freq", "Hàng ngày") # Mặc định mới
-        
-        tz_vn = pytz.timezone('Asia/Ho_Chi_Minh')
-        now_vn = datetime.now(tz_vn)
-        
-        if now_vn.hour != scheduled_hour: return False
-        
-        # LOGIC MỚI: Check theo từ khóa tiếng Việt
-        if run_freq == "Hàng ngày" or run_freq == "1 ngày/1 lần": return True
-        elif (run_freq == "Hàng tuần" or run_freq == "1 tuần/1 lần") and now_vn.weekday() == 0: return True
-        elif (run_freq == "Hàng tháng" or run_freq == "1 tháng/1 lần") and now_vn.day == 1: return True
-        
-        return False
-    except: return False
-
-def fetch_single_csv_safe(row_config, token):
-    link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', ''))
-    source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
-    month_val = str(row_config.get('Tháng', ''))
-    sheet_id = extract_id(link_src)
-    if not sheet_id: return None, "Link lỗi"
-    
-    # Thử lấy sheet đầu tiên (GID=0) hoặc tìm cách lấy đúng sheet (ở đây bản auto chạy đơn giản lấy GID 0 hoặc cần nâng cấp giống app.py nếu muốn chính xác sheet name)
-    # Để an toàn cho bản auto, ta thường lấy sheet đầu tiên nếu không có cơ chế tìm GID phức tạp
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
-    headers = {'Authorization': f'Bearer {token}'}
-    try:
-        response = requests.get(url, headers=headers, timeout=30)
-        if response.status_code == 200:
-            df = pl.read_csv(io.BytesIO(response.content), infer_schema_length=0)
-            df = df.with_columns([
-                pl.lit(link_src).cast(pl.Utf8).alias(COL_LINK_SRC),
-                pl.lit(source_label).cast(pl.Utf8).alias(COL_LABEL_SRC),
-                pl.lit(month_val).cast(pl.Utf8).alias(COL_MONTH_SRC)
-            ])
-            return df, "Thành công"
-        return None, "Lỗi HTTP"
-    except: return None, "Lỗi Exception"
-
-def smart_update_safe(df_new_updates, target_link, target_sheet_name, creds, links_to_remove):
-    try:
-        gc = gspread.authorize(creds)
-        target_id = extract_id(target_link)
-        if not target_id: return False, "Link đích lỗi"
-        
-        sh = gc.open_by_key(target_id)
-        real_sheet_name = str(target_sheet_name).strip()
-        if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
-        try: wks = sh.worksheet(real_sheet_name)
-        except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
-        
-        token = creds.token 
-        if not token:
-            import google.auth.transport.requests
-            auth_req = google.auth.transport.requests.Request()
-            creds.refresh(auth_req)
-            token = creds.token
-
-        existing_headers = []
-        try: existing_headers = wks.row_values(1)
-        except: pass
-
-        if existing_headers:
-            try: link_col_idx = existing_headers.index(COL_LINK_SRC) + 1
-            except ValueError: link_col_idx = None
-            
-            if link_col_idx:
-                col_values = wks.col_values(link_col_idx)
-                rows_to_delete = []
-                for i, val in enumerate(col_values):
-                    if val in links_to_remove: rows_to_delete.append(i + 1)
-                
-                if rows_to_delete:
-                    rows_to_delete.sort()
-                    ranges = []
-                    start = rows_to_delete[0]; end = start
-                    for r in rows_to_delete[1:]:
-                        if r == end + 1: end = r
-                        else: ranges.append((start, end)); start = r; end = r
-                    ranges.append((start, end))
-                    
-                    delete_reqs = []
-                    for start, end in reversed(ranges):
-                        delete_reqs.append({"deleteDimension": {"range": {"sheetId": wks.id, "dimension": "ROWS", "startIndex": start - 1, "endIndex": end}}})
-                    if delete_reqs:
-                        sh.batch_update({'requests': delete_reqs})
-                        time.sleep(1)
-
-        if not df_new_updates.is_empty():
-            pdf = df_new_updates.to_pandas().fillna('')
-            
-            # Auto Align Header cho Bot
-            new_cols = pdf.columns.tolist()
-            if not existing_headers:
-                wks.append_row(new_cols)
-                final_headers = new_cols
-            else:
-                missing = [c for c in new_cols if c not in existing_headers]
-                if missing:
-                    wks.resize(cols=len(existing_headers) + len(missing))
-                    final_headers = existing_headers + missing
-                    wks.update(range_name="A1", values=[final_headers])
-                else:
-                    final_headers = existing_headers
-            
-            pdf_aligned = pdf.reindex(columns=final_headers, fill_value="")
-            data_values = pdf_aligned.values.tolist()
-
-            BATCH_SIZE = 5000
-            total_rows = len(data_values)
-            for i in range(0, total_rows, BATCH_SIZE):
-                chunk = data_values[i : i + BATCH_SIZE]
-                wks.append_rows(chunk)
-                time.sleep(1)
-            return True, f"OK +{total_rows} dòng"
-            
-        return True, "OK (Cleaned)"
-
-    except Exception as e: return False, str(e)
-
-def run_auto_job():
-    print("🚀 Auto Job...")
-    creds = get_creds()
-    if not creds: return
-    HISTORY_SHEET_ID = os.environ.get("HISTORY_SHEET_ID")
-    if not check_is_run_time(creds, HISTORY_SHEET_ID): return
-
-    is_locked, user, _ = get_system_lock(creds, HISTORY_SHEET_ID)
-    if is_locked:
-        write_auto_log(creds, HISTORY_SHEET_ID, "BỎ QUA", f"Lock bởi {user}")
+        ws_config = utils.get_db_worksheet("luu_cau_hinh")
+        data = ws_config.get_all_records()
+        df = pd.DataFrame(data)
+    except Exception as e:
+        print(f"Lỗi load config: {e}")
         return
 
-    set_system_lock(creds, HISTORY_SHEET_ID, "AUTO_BOT", lock=True)
-    write_auto_log(creds, HISTORY_SHEET_ID, "ĐANG CHẠY", "Bắt đầu...")
+    today = datetime.now().date()
 
-    try: 
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(HISTORY_SHEET_ID)
-        wks_config = sh.worksheet(SHEET_CONFIG_NAME)
-        df_config = get_as_dataframe(wks_config, evaluate_formulas=True, dtype=str)
+    for index, row in df.iterrows():
+        # Chỉ chạy khối chưa chốt
+        if row['Status'] != "Chưa chốt & đang cập nhật":
+            continue
+
+        # Logic Hẹn Giờ
+        last_run_str = str(row['Last_Run'])
+        freq = row['Tan_Suat_Hen_Gio']
+        should_run = False
         
-        rows_to_run = []
-        if 'Trạng thái' in df_config.columns:
-            df_config['Trạng thái'] = df_config['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
-            rows_to_run = df_config[df_config['Trạng thái'] == "Chưa chốt & đang cập nhật"].to_dict('records')
-
-        if not rows_to_run:
-            write_auto_log(creds, HISTORY_SHEET_ID, "BỎ QUA", "Không có dòng nào 'Chưa chốt'.")
-            return
-
-        import google.auth.transport.requests
-        auth_req = google.auth.transport.requests.Request()
-        creds.refresh(auth_req)
-        token = creds.token
-
-        grouped_tasks = defaultdict(list)
-        for row in rows_to_run:
-            t_link = row.get('Link dữ liệu đích', '')
-            t_sheet = str(row.get('Tên sheet dữ liệu đích', '')).strip()
-            if not t_sheet: t_sheet = "Tong_Hop_Data"
-            grouped_tasks[(t_link, t_sheet)].append(row)
-
-        final_msgs = []
-        all_success = True
-
-        for (target_link, target_sheet), group_rows in grouped_tasks.items():
-            results = []
-            links_remove = []
-            for row in group_rows:
-                df, msg = fetch_single_csv_safe(row, token)
-                if df is not None:
-                    results.append(df)
-                    links_remove.append(row.get('Link dữ liệu lấy dữ liệu'))
-            
-            if results or links_remove:
-                if results: df_new = pl.concat(results, how="vertical", rechunk=True)
-                else: df_new = pl.DataFrame()
-                success, msg = smart_update_safe(df_new, target_link, target_sheet, creds, links_remove)
-                final_msgs.append(msg)
-                if not success: all_success = False
-            else:
-                final_msgs.append(f"Sheet '{target_sheet}': Thất bại.")
-                all_success = False
-
-        msg_sum = " | ".join(final_msgs)
-        if all_success:
-            if 'Trạng thái' in df_config.columns:
-                df_config.loc[df_config['Trạng thái'] == "Chưa chốt & đang cập nhật", 'Hành động'] = "Đã xong (Auto)"
-            
-            wks_config.clear()
-            wks_config.update([df_config.columns.tolist()] + df_config.fillna('').values.tolist())
-            write_auto_log(creds, HISTORY_SHEET_ID, "THÀNH CÔNG", msg_sum)
+        if not last_run_str: 
+            should_run = True
         else:
-            write_auto_log(creds, HISTORY_SHEET_ID, "LỖI", msg_sum)
+            try:
+                last_run = datetime.strptime(last_run_str, "%Y-%m-%d").date()
+                diff = (today - last_run).days
+                if freq == "Hàng ngày" and diff >= 1: should_run = True
+                elif freq == "Hàng tuần" and diff >= 7: should_run = True
+                elif freq == "Hàng tháng" and diff >= 30: should_run = True
+            except: should_run = True
 
-    finally:
-        set_system_lock(creds, HISTORY_SHEET_ID, "AUTO_BOT", lock=False)
+        if should_run:
+            print(f"Running: {row['Block_Name']}...")
+            
+            # Check Lock
+            locked, user = utils.check_lock()
+            if locked and user != "System_Auto":
+                print(f"Skip. Locked by {user}")
+                continue
+
+            # Chạy
+            ok, msg, count, rng = utils.process_single_block(row, "GITHUB_BOT", is_auto=True)
+            print(f"Result: {msg} | Rows: {count} | Range: {rng}")
+
+            if ok:
+                # Update DB (index + 2)
+                ws_config.update_cell(index + 2, 9, str(today))
+                ws_config.update_cell(index + 2, 11, count)
+                ws_config.update_cell(index + 2, 13, rng)
+
+    print("--- AUTO BOT END ---")
 
 if __name__ == "__main__":
-    run_auto_job()
+    run_auto_bot()
