@@ -305,7 +305,7 @@ def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
         return True, "Thành công (Không có data mới)"
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}"
 
-# --- 5. LOGIC CHÍNH (PIPELINE) - ĐÃ SỬA LỖI LIST vs STRING ---
+# --- 5. LOGIC CHÍNH (PIPELINE) ---
 def process_pipeline(rows_to_run, user_id):
     creds = get_creds()
     is_locked, locking_user, lock_time = get_system_lock(creds)
@@ -329,7 +329,7 @@ def process_pipeline(rows_to_run, user_id):
                 t_link = str(raw_t[0]).strip() if raw_t else ""
             else:
                 t_link = str(raw_t).strip()
-            row['Link dữ liệu đích'] = t_link # Cập nhật lại row
+            row['Link dữ liệu đích'] = t_link 
 
             # Sửa lỗi cho Link Nguồn
             raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
@@ -337,7 +337,7 @@ def process_pipeline(rows_to_run, user_id):
                 s_link = str(raw_s[0]).strip() if raw_s else ""
             else:
                 s_link = str(raw_s).strip()
-            row['Link dữ liệu lấy dữ liệu'] = s_link # Cập nhật lại row
+            row['Link dữ liệu lấy dữ liệu'] = s_link 
 
             t_sheet = str(row.get('Tên sheet dữ liệu đích', '')).strip()
             if not t_sheet: t_sheet = "Tong_Hop_Data"
@@ -416,7 +416,6 @@ def man_scan(df):
     creds = get_creds()
     errs = []
     for idx, row in df.iterrows():
-        # Xử lý list vs string cho link nguồn
         raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
         if isinstance(raw_s, list): link_src = str(raw_s[0]).strip() if raw_s else ""
         else: link_src = str(raw_s).strip()
@@ -425,7 +424,6 @@ def man_scan(df):
             ok, msg = verify_access_fast(link_src, creds)
             if not ok: errs.append((row.get('STT'), "Nguồn", link_src, f"{msg} -> Cần quyền XEM"))
         
-        # Xử lý list vs string cho link đích
         raw_t = row.get('Link dữ liệu đích', '')
         if isinstance(raw_t, list): link_tgt = str(raw_t[0]).strip() if raw_t else ""
         else: link_tgt = str(raw_t).strip()
@@ -478,8 +476,13 @@ def save_block_config(df_current_ui, current_block_name, creds):
     
     df_final = pd.concat([df_other_blocks, df_to_save], ignore_index=True)
     
+    # --- FIX API Error: Ép kiểu toàn bộ về string trước khi lưu ---
+    df_final = df_final.astype(str)
+    df_final = df_final.replace(['nan', 'None', '<NA>'], '')
+    # -----------------------------------------------------------
+
     wks.clear()
-    wks.update([df_final.columns.tolist()] + df_final.fillna('').values.tolist())
+    wks.update([df_final.columns.tolist()] + df_final.values.tolist())
     st.toast(f"✅ Đã lưu cấu hình khối: {current_block_name}!", icon="💾")
 
 def load_sys_schedule(creds):
@@ -514,7 +517,7 @@ def main_ui():
     
     st.title(f"⚙️ Tool Quản Lý Data (User: {user_id})")
     
-    # --- A. SIDEBAR: QUẢN LÝ KHỐI ---
+    # --- A. SIDEBAR ---
     with st.sidebar:
         st.header("📦 Quản Lý Khối")
         
@@ -543,12 +546,9 @@ def main_ui():
             else:
                 df_remain = st.session_state['df_full_config'][st.session_state['df_full_config'][COL_BLOCK_NAME] != selected_block]
                 save_block_config(df_remain, "TEMP_DELETE", creds)
-                gc = gspread.authorize(creds)
-                sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
-                wks = sh.worksheet(SHEET_CONFIG_NAME)
-                wks.clear()
-                wks.update([df_remain.columns.tolist()] + df_remain.fillna('').values.tolist())
-                del st.session_state['df_full_config']
+                
+                # Cập nhật cache local để không phải load lại từ server
+                st.session_state['df_full_config'] = df_remain
                 st.rerun()
 
     # --- B. MAIN AREA ---
@@ -623,8 +623,8 @@ def main_ui():
                     if isinstance(results_map, str): st.error(results_map)
                     elif results_map:
                         st.success("Xong.")
-                        # UPDATE UI (Đã sửa lỗi list vs string)
                         for idx, row in edited_df.iterrows():
+                            # Fix lỗi so sánh list vs string
                             raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
                             if isinstance(raw_s, list): s_link = str(raw_s[0]).strip() if raw_s else ""
                             else: s_link = str(raw_s).strip()
