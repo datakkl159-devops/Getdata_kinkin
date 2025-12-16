@@ -9,3 +9,5 @@ xlsxwriter
 gspread
 gspread-dataframe
 pytz
+oauth2client
+openpyxl
