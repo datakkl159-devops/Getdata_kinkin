@@ -447,13 +447,12 @@ def main_ui():
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df = df.dropna(how='all')
         
-        # Cleanup column names
         rename_map = {
             'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích', 
             'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc',
             'Link file nguồn': 'Link dữ liệu lấy dữ liệu',
             'Link file đích': 'Link dữ liệu đích',
-            'Phân loại': 'Nhóm' # Cột định danh Khối
+            'Phân loại': 'Nhóm' 
         }
         for old, new in rename_map.items():
             if old in df.columns and new not in df.columns: df = df.rename(columns={old: new})
@@ -478,7 +477,6 @@ def main_ui():
             gc = gspread.authorize(creds)
             sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
             wks_sys = sh.worksheet(SHEET_SYS_CONFIG)
-            # Lưu danh sách nhóm vào cell B5 (ví dụ)
             wks_sys.update("A5:B5", [["group_list", ",".join(groups_list)]])
             st.toast("✅ Đã cập nhật danh sách khối!", icon="💾")
         except: pass
@@ -493,10 +491,14 @@ def main_ui():
         except: pass
         return ["Chung"]
 
+    # --- KHỞI TẠO STATE AN TOÀN ---
     if 'df_config' not in st.session_state:
         with st.spinner("Đang tải dữ liệu..."): 
             st.session_state['df_config'] = load_conf(creds)
-            st.session_state['active_groups'] = load_active_groups()
+            
+    # Tách riêng phần load group để tránh lỗi key
+    if 'active_groups' not in st.session_state:
+        st.session_state['active_groups'] = load_active_groups()
 
     # FIX LIST->STRING
     cols_to_fix = ["Link dữ liệu lấy dữ liệu", "Link dữ liệu đích"]
@@ -507,7 +509,7 @@ def main_ui():
                     lambda x: ", ".join(map(str, x)) if isinstance(x, list) else (str(x) if pd.notna(x) else "")
                 )
 
-    # --- QUẢN LÝ KHỐI (THÊM/XÓA) ---
+    # --- QUẢN LÝ KHỐI ---
     with st.expander("🛠️ Quản lý Khối (Thêm/Xóa nhóm phần mềm)", expanded=False):
         c_add, c_del = st.columns(2)
         with c_add:
@@ -518,7 +520,9 @@ def main_ui():
                     save_active_groups(st.session_state['active_groups'])
                     st.rerun()
         with c_del:
-            del_grp = st.selectbox("Chọn khối để xóa:", [""] + st.session_state['active_groups'])
+            # FIX LỖI KEY ERROR: Đảm bảo active_groups luôn tồn tại
+            current_groups = st.session_state.get('active_groups', ["Chung"])
+            del_grp = st.selectbox("Chọn khối để xóa:", [""] + current_groups)
             if st.button("🗑️ Xóa Khối"):
                 if del_grp and del_grp in st.session_state['active_groups']:
                     st.session_state['active_groups'].remove(del_grp)
@@ -527,7 +531,7 @@ def main_ui():
 
     st.divider()
 
-    # --- HIỂN THỊ CÁC KHỐI (BLOCKS) ---
+    # --- DISPLAY BLOCKS ---
     col_order = ["STT", "Trạng thái", "Ngày chốt", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Kết quả", "Dòng dữ liệu"]
     col_config = {
         "STT": st.column_config.NumberColumn("STT", disabled=True, width="small"),
@@ -539,7 +543,6 @@ def main_ui():
         "Dòng dữ liệu": st.column_config.TextColumn("Dòng Dữ Liệu", disabled=True),
     }
 
-    # Helper function to save FULL dataframe
     def save_full_df(full_df, creds):
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -551,7 +554,6 @@ def main_ui():
         wks.update([df_save.columns.tolist()] + df_save.fillna('').values.tolist())
         st.toast("✅ Đã lưu dữ liệu!", icon="💾")
 
-    # Helper function scan permission
     def scan_perm_ui(df_sub):
         errs = []
         for idx, row in df_sub.iterrows():
@@ -565,15 +567,11 @@ def main_ui():
                 if not ok: errs.append((row.get('STT'), "Đích", link_tgt, f"{msg} -> Cần quyền SỬA"))
         return errs
 
-    # LOOP THROUGH GROUPS
-    for group_name in st.session_state['active_groups']:
+    for group_name in st.session_state.get('active_groups', []):
         with st.expander(f"📂 KHỐI: {group_name}", expanded=False):
-            # 1. Filter Data for this Group
-            # Create a copy to edit
             current_full_df = st.session_state['df_config']
             sub_df = current_full_df[current_full_df['Nhóm'] == group_name].copy()
             
-            # 2. Show Editor
             edited_sub_df = st.data_editor(
                 sub_df,
                 column_order=col_order,
@@ -584,10 +582,8 @@ def main_ui():
                 key=f"editor_{group_name}"
             )
 
-            # 3. Action Buttons for THIS BLOCK only
             c1, c2, c3 = st.columns([1, 1, 2])
             
-            # Nút CHẠY
             if c1.button(f"▶️ Chạy {group_name}", key=f"run_{group_name}", type="primary"):
                 rows_run = edited_sub_df[edited_sub_df['Trạng thái'] == "Chưa chốt & đang cập nhật"].to_dict('records')
                 rows_run = [r for r in rows_run if len(str(r.get('Link dữ liệu lấy dữ liệu', ''))) > 5]
@@ -595,12 +591,10 @@ def main_ui():
                 if not rows_run: st.warning("Không có dòng nào chưa chốt để chạy.")
                 else:
                     with st.status(f"Đang xử lý khối {group_name}...", expanded=True):
-                        # RUN PIPELINE
                         all_ok, results_map = process_pipeline(rows_run, user_id)
                         
                         if results_map:
                             st.success("Hoàn tất!")
-                            # Update results back to edited_sub_df first
                             for idx, row in edited_sub_df.iterrows():
                                 s_link = row.get('Link dữ liệu lấy dữ liệu', '')
                                 if s_link in results_map:
@@ -609,13 +603,10 @@ def main_ui():
                                         edited_sub_df.at[idx, 'Kết quả'] = msg
                                     edited_sub_df.at[idx, 'Dòng dữ liệu'] = rng
                             
-                            # Merge back to MAIN DF and Save
-                            # Logic: Remove old group rows from Main, Append new edited rows
                             df_others = current_full_df[current_full_df['Nhóm'] != group_name]
-                            edited_sub_df['Nhóm'] = group_name # Ensure group label
+                            edited_sub_df['Nhóm'] = group_name 
                             new_full_df = pd.concat([df_others, edited_sub_df], ignore_index=True)
                             
-                            # Reset STT
                             new_full_df = new_full_df.reset_index(drop=True)
                             new_full_df['STT'] = range(1, len(new_full_df) + 1)
                             
@@ -625,7 +616,6 @@ def main_ui():
                             st.rerun()
                         else: st.error("Lỗi xử lý.")
 
-            # Nút QUÉT QUYỀN
             if c2.button(f"🔍 Quét Quyền {group_name}", key=f"scan_{group_name}"):
                 errs = scan_perm_ui(edited_sub_df)
                 if errs:
@@ -635,9 +625,7 @@ def main_ui():
                         st.markdown(f"- {stt} [{l_type}]: {msg}")
                 else: st.success("Quyền OK!")
 
-            # Nút LƯU (Chỉ lưu thay đổi của khối này)
             if c3.button(f"💾 Lưu Cấu Hình {group_name}", key=f"save_{group_name}"):
-                # Merge logic
                 df_others = current_full_df[current_full_df['Nhóm'] != group_name]
                 edited_sub_df['Nhóm'] = group_name
                 new_full_df = pd.concat([df_others, edited_sub_df], ignore_index=True)
@@ -650,7 +638,7 @@ def main_ui():
 
     st.divider()
 
-    # --- HẸN GIỜ (GLOBAL) ---
+    # --- HẸN GIỜ ---
     saved_hour = 8
     saved_freq = "Hàng ngày"
     try:
