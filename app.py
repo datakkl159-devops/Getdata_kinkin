@@ -110,7 +110,7 @@ def verify_access_fast(url, creds):
     except gspread.exceptions.APIError as e: return False, "⛔ Chưa cấp quyền (403)" if "403" in str(e) else f"❌ Lỗi API: {e}"
     except Exception as e: return False, f"❌ Lỗi: {e}"
 
-# --- 3. CORE LOGIC (XỬ LÝ DỮ LIỆU) ---
+# --- 3. CORE LOGIC (Xử lý dữ liệu) ---
 def fetch_single_csv_safe(row_config, creds, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', '')); source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip(); month_val = str(row_config.get('Tháng', '')); sheet_id = extract_id(link_src)
@@ -341,7 +341,6 @@ def main_ui():
             status_text.text(f"Đang xử lý Khối: {b_name}..."); df_curr = st.session_state['df_config']
             
             # --- FIX LOGIC LỌC DỮ LIỆU ---
-            # Chuẩn hóa dữ liệu trước khi lọc (tránh None, khoảng trắng)
             df_curr['Trạng thái'] = df_curr['Trạng thái'].astype(str).str.strip()
             df_curr['Link dữ liệu lấy dữ liệu'] = df_curr['Link dữ liệu lấy dữ liệu'].astype(str).str.strip()
             
@@ -432,31 +431,45 @@ def main_ui():
             with c_run_b:
                 if st.button(f"▶️ Chạy Khối '{block_name}'", key=f"run_{block_name}", type="primary"):
                     
-                    # 1. TỰ ĐỘNG LƯU TRƯỚC KHI CHẠY (Fix lỗi mất data)
-                    save_data(st.session_state['df_config'], creds)
-
-                    # 2. CHUẨN HÓA & LỌC DỮ LIỆU (Fix lỗi không thấy dòng)
-                    # Chuyển về string và strip khoảng trắng
-                    edited_block_df['Trạng thái'] = edited_block_df['Trạng thái'].astype(str).str.strip()
-                    edited_block_df['Link dữ liệu lấy dữ liệu'] = edited_block_df['Link dữ liệu lấy dữ liệu'].astype(str).str.strip()
-
+                    # 1. CHUẨN HÓA DỮ LIỆU (Fix lỗi không thấy dòng do space/None)
+                    edited_block_df['Trạng thái'] = edited_block_df['Trạng thái'].fillna("").astype(str).str.strip()
+                    edited_block_df['Link dữ liệu lấy dữ liệu'] = edited_block_df['Link dữ liệu lấy dữ liệu'].fillna("").astype(str).str.strip()
+                    
+                    # 2. TỰ ĐỘNG LƯU TRƯỚC KHI CHẠY (Fix lỗi mất data)
+                    edited_block_df['Block_Name'] = block_name
+                    df_others = st.session_state['df_config'][st.session_state['df_config']['Block_Name'] != block_name]
+                    df_new_total = pd.concat([df_others, edited_block_df], ignore_index=True)
+                    df_new_total.reset_index(drop=True, inplace=True)
+                    df_new_total['STT'] = range(1, len(df_new_total) + 1)
+                    
+                    # Lưu session & sheet
+                    st.session_state['df_config'] = df_new_total
+                    save_data(df_new_total, creds)
+                    
+                    # 3. LỌC DỮ LIỆU CHÍNH XÁC
                     rows_run = edited_block_df[
-                        (edited_block_df['Trạng thái'] == "Chưa chốt & đang cập nhật") &
+                        (edited_block_df['Trạng thái'] == "Chưa chốt & đang cập nhật") & 
                         (edited_block_df['Link dữ liệu lấy dữ liệu'].str.len() > 5)
                     ].to_dict('records')
                     
-                    if not rows_run: st.warning("Không có dòng nào 'Chưa chốt' hợp lệ (Kiểm tra Link & Trạng thái).")
+                    if not rows_run:
+                        st.warning("⚠️ Không tìm thấy dòng nào hợp lệ để chạy!\n\nKiểm tra lại:\n1. Trạng thái phải là 'Chưa chốt & đang cập nhật'\n2. Link nguồn phải có dữ liệu (>5 ký tự)")
                     else:
-                        with st.status(f"Đang xử lý khối {block_name}...", expanded=True):
+                        with st.status(f"Đang xử lý {len(rows_run)} nguồn của khối '{block_name}'...", expanded=True):
                             ok, res_map, stats = process_pipeline(rows_run, f"{user_id}_{block_name}")
+                            
                             if res_map:
                                 for idx, row in st.session_state['df_config'].iterrows():
-                                    if row['Block_Name'] == block_name and row.get('Link dữ liệu lấy dữ liệu', '') in res_map:
-                                        msg, rng = res_map[row.get('Link dữ liệu lấy dữ liệu')]
-                                        if row['Trạng thái'] == "Chưa chốt & đang cập nhật": st.session_state['df_config'].at[idx, 'Kết quả'] = msg
-                                        st.session_state['df_config'].at[idx, 'Dòng dữ liệu'] = rng
+                                    if row['Block_Name'] == block_name:
+                                        s_link = str(row.get('Link dữ liệu lấy dữ liệu', '')).strip()
+                                        if s_link in res_map:
+                                            msg, rng = res_map[s_link]
+                                            if str(row['Trạng thái']).strip() == "Chưa chốt & đang cập nhật":
+                                                st.session_state['df_config'].at[idx, 'Kết quả'] = msg
+                                            st.session_state['df_config'].at[idx, 'Dòng dữ liệu'] = rng
+                                
                                 save_data(st.session_state['df_config'], creds)
-                                st.success(f"✅ Xong! Xử lý: {stats['sources']} nguồn | Thêm: +{stats['rows']} dòng | Hết: {stats['time']}s")
+                                st.success(f"✅ Hoàn tất! Xử lý: {stats['sources']} nguồn | Thêm: +{stats['rows']} dòng | Thời gian: {stats['time']}s")
                                 time.sleep(2); st.rerun()
 
             with c_scan_b:
