@@ -14,19 +14,22 @@ import pytz
 from collections import defaultdict
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Tool Quản Lý Data Multi-Block", layout="wide")
+st.set_page_config(page_title="Tool Quản Lý Data Đa Khối", layout="wide")
 
+# Danh sách tài khoản
 AUTHORIZED_USERS = {
     "admin2024": "Admin_Master",
     "team_hn": "Team_HaNoi",
     "team_hcm": "Team_HCM"
 }
 
+# Tên các Sheet
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
 SHEET_LOG_NAME = "log_lanthucthi"
 SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
 
+# Tên các cột hệ thống
 COL_LINK_SRC = "Link file nguồn"
 COL_LABEL_SRC = "Sheet nguồn"
 COL_MONTH_SRC = "Tháng chốt"
@@ -35,7 +38,7 @@ COL_BLOCK_NAME = "Block_Name"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 
-# --- 2. HÀM CƠ BẢN ---
+# --- 2. HÀM CƠ BẢN (AUTH, LOCK, LOG) ---
 def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
@@ -108,7 +111,7 @@ def verify_access_fast(url, creds):
     except gspread.exceptions.APIError as e: return False, "⛔ Chưa cấp quyền (403)" if "403" in str(e) else f"❌ Lỗi API: {e}"
     except Exception as e: return False, f"❌ Lỗi: {e}"
 
-# --- 3. CORE LOGIC (ĐÃ CẬP NHẬT ĐỂ ĐẾM DÒNG) ---
+# --- 3. LOGIC XỬ LÝ (CORE) ---
 def fetch_single_csv_safe(row_config, creds, token):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', '')); source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip(); month_val = str(row_config.get('Tháng', '')); sheet_id = extract_id(link_src)
@@ -162,7 +165,7 @@ def scan_realtime_row_ranges(target_link, target_sheet_name, creds):
     return results
 
 def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
-    added_rows_count = 0 # Đếm số dòng thêm mới
+    added_rows_count = 0
     try:
         gc = gspread.authorize(creds); target_id = extract_id(target_link)
         if not target_id: return False, "Link đích lỗi", 0
@@ -205,18 +208,14 @@ def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
 
         if dfs_to_concat:
             final_pdf = pd.concat(dfs_to_concat, ignore_index=True); data_values = final_pdf.values.tolist(); BATCH_SIZE = 5000
-            added_rows_count = len(data_values) # Cập nhật số dòng
+            added_rows_count = len(data_values)
             for i in range(0, len(data_values), BATCH_SIZE): chunk = data_values[i : i + BATCH_SIZE]; wks.append_rows(chunk); time.sleep(1)
             return True, "Thành công", added_rows_count
         return True, "Thành công (Không có data mới)", 0
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}", 0
 
 def process_pipeline(rows_to_run, user_id):
-    # Stats Tracking
-    total_sources = 0
-    total_rows_added = 0
-    start_time = time.time()
-    
+    total_sources = 0; total_rows_added = 0; start_time = time.time()
     creds = get_creds(); is_locked, locking_user, lock_time = get_system_lock(creds)
     if is_locked and locking_user != user_id: return False, f"HỆ THỐNG ĐANG BẬN! {locking_user} đang chạy từ {lock_time}.", {}
     set_system_lock(creds, user_id, lock=True)
@@ -259,17 +258,8 @@ def process_pipeline(rows_to_run, user_id):
                     global_results_map[s_link] = (status_str, final_range)
         
         write_detailed_log(creds, st.secrets["gcp_service_account"]["history_sheet_id"], log_entries)
-        
-        end_time = time.time()
-        elapsed_time = round(end_time - start_time, 2)
-        
-        # Return Stats dictionary
-        run_stats = {
-            "sources": total_sources,
-            "rows": total_rows_added,
-            "time": elapsed_time
-        }
-        
+        end_time = time.time(); elapsed_time = round(end_time - start_time, 2)
+        run_stats = {"sources": total_sources, "rows": total_rows_added, "time": elapsed_time}
         return all_success, global_results_map, run_stats
     finally: set_system_lock(creds, user_id, lock=False)
 
@@ -331,7 +321,7 @@ def main_ui():
         total_s = 0; total_r = 0; total_t = 0
         for i, b_name in enumerate(blocks):
             status_text.text(f"Đang xử lý Khối: {b_name}..."); df_curr = st.session_state['df_config']
-            rows_run = df_curr[(df_curr['Block_Name'] == b_name) & (df_curr['Trạng thái'] != "Đã chốt")].to_dict('records')
+            rows_run = df_curr[(df_curr['Block_Name'] == b_name) & (df_curr['Trạng thái'] == "Chưa chốt & đang cập nhật")].to_dict('records')
             rows_run = [r for r in rows_run if len(str(r.get('Link dữ liệu lấy dữ liệu', ''))) > 5]
             if rows_run:
                 ok, res_map, stats = process_pipeline(rows_run, f"{user_id}_ALL_RUN")
@@ -339,7 +329,7 @@ def main_ui():
                 for idx, row in df_curr.iterrows():
                     if row['Block_Name'] == b_name and row.get('Link dữ liệu lấy dữ liệu', '') in res_map:
                         msg, rng = res_map[row.get('Link dữ liệu lấy dữ liệu')]
-                        if row['Trạng thái'] != "Đã chốt": st.session_state['df_config'].at[idx, 'Kết quả'] = msg
+                        if row['Trạng thái'] == "Chưa chốt & đang cập nhật": st.session_state['df_config'].at[idx, 'Kết quả'] = msg
                         st.session_state['df_config'].at[idx, 'Dòng dữ liệu'] = rng
             progress_bar.progress((i + 1) / len(blocks))
         save_data(st.session_state['df_config'], creds); status_text.text("✅ Đã chạy xong tất cả!"); 
@@ -380,7 +370,7 @@ def main_ui():
             c_run_b, c_scan_b = st.columns([1, 1])
             with c_run_b:
                 if st.button(f"▶️ Chạy Khối '{block_name}'", key=f"run_{block_name}"):
-                    rows_run = edited_block_df[edited_block_df['Trạng thái'] != "Đã chốt"].to_dict('records')
+                    rows_run = edited_block_df[edited_block_df['Trạng thái'] == "Chưa chốt & đang cập nhật"].to_dict('records')
                     rows_run = [r for r in rows_run if len(str(r.get('Link dữ liệu lấy dữ liệu', ''))) > 5]
                     if not rows_run: st.warning("Không có dòng nào 'Chưa chốt'.")
                     else:
@@ -390,7 +380,7 @@ def main_ui():
                                 for idx, row in st.session_state['df_config'].iterrows():
                                     if row['Block_Name'] == block_name and row.get('Link dữ liệu lấy dữ liệu', '') in res_map:
                                         msg, rng = res_map[row.get('Link dữ liệu lấy dữ liệu')]
-                                        if row['Trạng thái'] != "Đã chốt": st.session_state['df_config'].at[idx, 'Kết quả'] = msg
+                                        if row['Trạng thái'] == "Chưa chốt & đang cập nhật": st.session_state['df_config'].at[idx, 'Kết quả'] = msg
                                         st.session_state['df_config'].at[idx, 'Dòng dữ liệu'] = rng
                                 save_data(st.session_state['df_config'], creds)
                                 st.success(f"✅ Xong! Xử lý: {stats['sources']} nguồn | Thêm: +{stats['rows']} dòng | Hết: {stats['time']}s")
