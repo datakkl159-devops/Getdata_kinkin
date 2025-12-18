@@ -83,8 +83,8 @@ def get_sh_with_retry(creds, sheet_id_or_key):
         try:
             return gc.open_by_key(sheet_id_or_key)
         except Exception as e:
-            if i == max_retries - 1: raise e # Ném lỗi nếu hết lượt
-            time.sleep((2 ** i) + random.random()) # Backoff: 1s, 2s, 4s...
+            if i == max_retries - 1: raise e
+            time.sleep((2 ** i) + random.random()) 
     return None
 
 def extract_id(url):
@@ -94,7 +94,7 @@ def extract_id(url):
         except: return None
     return None
 
-# --- 3. HỆ THỐNG KHÓA & LOG (CẬP NHẬT LOG MỚI) ---
+# --- 3. HỆ THỐNG KHÓA & LOG ---
 def get_system_lock(creds):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -130,7 +130,6 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         try: wks = sh.worksheet(SHEET_LOG_NAME)
         except: 
             wks = sh.add_worksheet(SHEET_LOG_NAME, rows=1000, cols=13)
-            # HEADER MỚI THEO YÊU CẦU
             wks.append_row([
                 "Ngày & giờ get dữ liệu", "Ngày chốt", "Tháng", "Nhân sự get", 
                 "Link nguồn", "Link đích", "Sheet Đích", "Sheet nguồn lấy dữ liệu", 
@@ -149,12 +148,6 @@ def verify_access_fast(url, creds):
     except Exception as e: return False, f"Lỗi: {e}"
 
 def fetch_data_preserve_columns(row_config, creds):
-    """
-    Hàm tải dữ liệu mới:
-    1. Đọc trực tiếp header từ Google Sheets -> Giữ nguyên thứ tự gốc.
-    2. Không dùng infer schema -> Giữ nguyên định dạng (số 0, ngày tháng).
-    3. Thêm 3 cột hệ thống vào cuối cùng.
-    """
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', '')).strip()
     source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
@@ -174,22 +167,18 @@ def fetch_data_preserve_columns(row_config, creds):
             except: return None, sheet_id, f"❌ Không tìm thấy sheet: '{source_label}'"
         else: wks_source = sh_source.sheet1
             
-        # Lấy toàn bộ dữ liệu dạng mảng 2 chiều (giữ nguyên text)
         data = wks_source.get_all_values()
         
         if data and len(data) > 0:
-            headers = data[0] # Header gốc
-            rows = data[1:]   # Dữ liệu
+            headers = data[0]
+            rows = data[1:]
             
             if not rows:
                 status_msg = "Sheet rỗng (Chỉ có tiêu đề)"
-                # Tạo DF rỗng với header gốc
                 df = pd.DataFrame(columns=headers)
             else:
-                # Tạo DF với header gốc, dữ liệu giữ nguyên thứ tự
                 df = pd.DataFrame(rows, columns=headers)
                 
-            # Ép kiểu String toàn bộ để an toàn
             df = df.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
             status_msg = "Thành công"
         else:
@@ -199,7 +188,6 @@ def fetch_data_preserve_columns(row_config, creds):
         return None, sheet_id, f"Lỗi tải data: {str(e)}"
 
     if df is not None:
-        # THÊM 3 CỘT VÀO CUỐI CÙNG (Dù cột gốc là gì thì 3 cột này luôn ở cuối)
         df[COL_LINK_SRC] = link_src
         df[COL_LABEL_SRC] = source_label
         df[COL_MONTH_SRC] = month_val
@@ -246,7 +234,6 @@ def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
         
         links_to_remove = [t[1] for t in tasks_list if t[1] and len(str(t[1])) > 5]
         
-        # 1. XÓA CŨ
         existing_headers = []
         try: existing_headers = wks.row_values(1)
         except: pass
@@ -275,12 +262,9 @@ def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
                         time.sleep(1)
             except ValueError: pass
 
-        # 2. XÁC ĐỊNH HEADER CHUNG (KHÔNG THAY ĐỔI THỨ TỰ CỦA FILE GỐC ĐẦU TIÊN)
         dfs_to_write = []
         
         if not existing_headers:
-            # Nếu file đích chưa có gì: Lấy header của file nguồn đầu tiên làm chuẩn
-            # Điều này đảm bảo thứ tự cột GIỐNG HỆT file nguồn
             first_df = tasks_list[0][0]
             if first_df is not None and not first_df.empty:
                 final_headers = first_df.columns.tolist()
@@ -290,12 +274,10 @@ def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
                 return True, "Không có dữ liệu nguồn để tạo header"
         else:
             final_headers = existing_headers
-            # Nếu có cột mới phát sinh thêm thì nối vào đuôi (không chèn vào giữa)
             all_new_cols = []
             for t in tasks_list:
                 if t[0] is not None: all_new_cols.extend(t[0].columns.tolist())
             
-            # Loại bỏ trùng lặp mà giữ thứ tự
             seen = set(existing_headers)
             cols_to_add = [x for x in all_new_cols if x not in seen and not seen.add(x)]
             
@@ -304,12 +286,9 @@ def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
                 final_headers = existing_headers + cols_to_add
                 wks.update(range_name="A1", values=[final_headers])
 
-        # 3. GHI DỮ LIỆU
         data_to_append = []
         for df, src_link in tasks_list:
             if df is not None and not df.empty:
-                # Reindex để sắp xếp cột theo đúng Header của file đích
-                # fill_value="" để ô trống là trống, không phải NaN
                 df_aligned = df.reindex(columns=final_headers, fill_value="")
                 data_to_append.extend(df_aligned.values.tolist())
 
@@ -329,14 +308,15 @@ def process_pipeline(rows_to_run, user_id, block_name_run):
     creds = get_creds()
     is_locked, locking_user, lock_time = get_system_lock(creds)
     if is_locked and locking_user != user_id and "AutoAll" not in user_id:
-        return False, f"HỆ THỐNG ĐANG BẬN! {locking_user} đang chạy từ {lock_time}."
+        # Return thêm 0 (số dòng)
+        return False, f"HỆ THỐNG ĐANG BẬN! {locking_user} đang chạy từ {lock_time}.", 0
     
     set_system_lock(creds, user_id, lock=True)
     try:
         grouped_tasks = defaultdict(list)
+        total_fetched_rows = 0 # Biến đếm tổng dòng
         
         for row in rows_to_run:
-            # Fix lỗi list vs string
             raw_t = row.get('Link dữ liệu đích', '')
             t_link = str(raw_t[0]).strip() if isinstance(raw_t, list) and raw_t else str(raw_t).strip()
             row['Link dữ liệu đích'] = t_link 
@@ -361,15 +341,15 @@ def process_pipeline(rows_to_run, user_id, block_name_run):
             
             tasks_list = []
             for row in group_rows:
-                # Dùng hàm mới: fetch_data_preserve_columns
                 df, sid, status = fetch_data_preserve_columns(row, creds)
                 src_link = row['Link dữ liệu lấy dữ liệu']
                 
                 if df is not None:
                     tasks_list.append((df, src_link))
+                    # Cộng dồn số dòng lấy được
+                    total_fetched_rows += len(df)
                 else:
                     global_results_map[src_link] = ("Lỗi tải/Quyền", "")
-                    # Log lỗi
                     log_entries.append([
                         time_now, "", str(row.get('Tháng', '')), user_id, 
                         src_link, target_link, target_sheet,
@@ -400,10 +380,9 @@ def process_pipeline(rows_to_run, user_id, block_name_run):
                     for df, sl in tasks_list:
                         if sl == s_link: height = str(len(df))
 
-                    # LOG MỚI ĐẦY ĐỦ CỘT
                     log_entries.append([
                         time_now, 
-                        "", # Bỏ Ngày chốt theo yêu cầu, để trống
+                        "", 
                         str(row.get('Tháng', '')),
                         user_id, s_link, target_link, target_sheet,
                         row.get('Tên sheet nguồn dữ liệu gốc', ''), 
@@ -413,7 +392,9 @@ def process_pipeline(rows_to_run, user_id, block_name_run):
         
         history_id = st.secrets["gcp_service_account"]["history_sheet_id"]
         write_detailed_log(creds, history_id, log_entries)
-        return all_success, global_results_map
+        
+        # Trả về 3 giá trị: Success, Map, Total Rows
+        return all_success, global_results_map, total_fetched_rows
     finally:
         set_system_lock(creds, user_id, lock=False)
 
@@ -450,7 +431,6 @@ def load_full_config(creds):
     for old, new in rename_map.items():
         if old in df.columns: df = df.rename(columns={old: new})
     
-    # BỎ 'Ngày chốt' TRONG DANH SÁCH CẦN THIẾT CỦA UI
     required_cols = ['Trạng thái', 'Tháng', 'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 'Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 'Kết quả', 'Dòng dữ liệu', COL_BLOCK_NAME]
     for c in required_cols:
         if c not in df.columns: df[c] = ""
@@ -553,7 +533,6 @@ def main_ui():
     df_display = df_display.reset_index(drop=True)
     df_display.insert(0, 'STT', range(1, len(df_display) + 1))
     
-    # BỎ CỘT 'Ngày chốt' TRONG UI
     col_order = ["STT", "Trạng thái", "Tháng", "Link dữ liệu lấy dữ liệu", "Link dữ liệu đích", "Tên sheet dữ liệu đích", "Tên sheet nguồn dữ liệu gốc", "Kết quả", "Dòng dữ liệu"]
     
     edited_df = st.data_editor(
@@ -614,12 +593,14 @@ def main_ui():
             if not rows_run: st.warning("⚠️ Không có dòng chưa chốt trong khối này.")
             else:
                 with st.status(f"Đang xử lý {len(rows_run)} nguồn của {selected_block}...", expanded=True):
-                    # Truyền block_name vào pipeline để log
-                    all_ok, results_map = process_pipeline(rows_run, user_id, selected_block) 
+                    start_t = time.time()
+                    all_ok, results_map, total_rows = process_pipeline(rows_run, user_id, selected_block) 
+                    end_t = time.time()
+                    elapsed = end_t - start_t
                     
                     if isinstance(results_map, str): st.error(results_map)
                     elif results_map:
-                        st.success("Xong.")
+                        st.success(f"✅ Xong. Tổng {total_rows} dòng. Hết {elapsed:.2f}s")
                         for idx, row in edited_df.iterrows():
                             raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
                             s_link = str(raw_s[0]).strip() if isinstance(raw_s, list) and raw_s else str(raw_s).strip()
@@ -639,20 +620,23 @@ def main_ui():
                 full_df = st.session_state['df_full_config']
                 all_blocks_list = full_df[COL_BLOCK_NAME].unique()
                 
+                total_all_rows = 0
+                start_all = time.time()
+                
                 for blk in all_blocks_list:
                     status.write(f"⏳ Đang chạy khối: **{blk}**...")
                     rows_blk = full_df[(full_df[COL_BLOCK_NAME] == blk) & (full_df['Trạng thái'] == "Chưa chốt & đang cập nhật")].to_dict('records')
                     rows_blk = [r for r in rows_blk if len(str(r.get('Link dữ liệu lấy dữ liệu', ''))) > 5]
                     
                     if rows_blk:
-                        # Truyền tên khối vào pipeline
-                        process_pipeline(rows_blk, f"{user_id} (AutoAll)", blk)
-                        status.write(f"✅ Xong khối {blk}.")
+                        _, _, rows_count = process_pipeline(rows_blk, f"{user_id} (AutoAll)", blk)
+                        total_all_rows += rows_count
+                        status.write(f"✅ Xong khối {blk} (+{rows_count} dòng).")
                     else:
                         status.write(f"⚪ Khối {blk} không có dữ liệu cần chạy.")
                 
-                status.update(label="Đã hoàn thành chạy tất cả!", state="complete", expanded=False)
-                st.toast("Đã chạy xong tất cả!", icon="🏁")
+                status.update(label=f"Đã chạy xong tất cả! Tổng {total_all_rows} dòng.", state="complete", expanded=False)
+                st.toast(f"Đã chạy xong tất cả! Tổng {total_all_rows} dòng. {time.time()-start_all:.2f}s", icon="🏁")
 
     with col_scan:
         if st.button("🔍 Quét Quyền"):
