@@ -44,7 +44,7 @@ DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- 2. HÀM HỖ TRỢ & HƯỚNG DẪN SỬ DỤNG (NỘI DUNG CHỐT) ---
+# --- 2. HÀM HỖ TRỢ & HƯỚNG DẪN SỬ DỤNG (CẬP NHẬT MỚI) ---
 def col_name_to_index(col_name):
     col_name = col_name.upper()
     index = 0
@@ -63,7 +63,18 @@ def show_guide_popup():
     * Hỗ trợ chia nhóm dữ liệu theo từng Khối (Block) để dễ quản lý.
     * Cơ chế cập nhật thông minh: Tự động xóa dữ liệu cũ và cập nhật dữ liệu mới nhất.
 
-    ### 2. Các Bước Thao Tác
+    ### 2. Giới Hạn & Cách Xử Lý Dữ Liệu Lớn (QUAN TRỌNG)
+    Do giới hạn của Google Sheets và Tài nguyên hệ thống, vui lòng tuân thủ quy tắc sau để tránh lỗi:
+
+    | Trạng Thái | Số Dòng Dữ Liệu | Khuyến Nghị Thao Tác |
+    | :--- | :--- | :--- |
+    | ✅ **An Toàn** | **< 200.000 dòng** | • Chạy bình thường.<br>• Có thể dùng tính năng `🚀 CHẠY TẤT CẢ`. |
+    | ⚠️ **Mạo Hiểm** | **> 300.000 dòng** | • **Nguy cơ:** Có thể bị đơ hoặc sập do đầy bộ nhớ.<br>• **Giải pháp:** Chỉ bấm `▶️ CHẠY KHỐI` (chạy từng khối một), tuyệt đối không bấm Chạy tất cả. |
+    | ⛔ **Không Thể** | **> 500.000 dòng** | • **Nguy cơ:** Vượt quá giới hạn ghi của Google Sheet (Timeout).<br>• **Giải pháp:** Bắt buộc phải **Tách File Đích** (Ví dụ: Tách thành Data_Quy1, Data_Quy2...) hoặc **Giới hạn cột** (chỉ lấy cột A:D thay vì lấy hết). |
+
+    ---
+
+    ### 3. Các Bước Thao Tác
 
     #### Bước 1: Đăng Nhập & Chọn Khối Làm Việc
     Tại thanh menu bên trái (Sidebar):
@@ -81,7 +92,7 @@ def show_guide_popup():
     | :--- | :--- |
     | **STT** | Số thứ tự (Tự động, không cần nhập). |
     | **Trạng thái** | • Chọn `Chưa chốt & đang cập nhật`: Tool sẽ chạy dòng này.<br>• Chọn `Đã chốt`: Tool sẽ bỏ qua dòng này. |
-    | **Vùng lấy dữ liệu** | • Nhập vùng cột muốn lấy (Ví dụ: `A:D`, `A:Z`).<br>• **Để trống**: Mặc định lấy toàn bộ bảng dữ liệu. |
+    | **Vùng lấy dữ liệu** | • Nhập vùng cột muốn lấy (Ví dụ: `A:D`, `A:Z`).<br>• **Để trống**: Mặc định lấy toàn bộ bảng dữ liệu. (Nên điền cụ thể để chạy nhanh hơn). |
     | **Tháng** | Nhập tháng để phân loại (VD: `10/2023`). |
     | **Link Nguồn** | Dán đường link file Google Sheet chứa dữ liệu gốc. |
     | **Link Đích** | Dán đường link file Google Sheet nơi dữ liệu sẽ đổ về. |
