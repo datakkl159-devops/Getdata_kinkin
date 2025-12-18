@@ -545,6 +545,20 @@ def load_full_config(creds):
     if 'STT' in df.columns: df = df.drop(columns=['STT'])
     return df
 
+def delete_block_from_server(block_name, creds):
+    """Xóa trực tiếp khối khỏi Server"""
+    sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
+    wks = sh.worksheet(SHEET_CONFIG_NAME)
+    df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
+    
+    # Lọc bỏ dòng của block đó
+    df = df[df[COL_BLOCK_NAME] != block_name]
+    
+    # Save lại
+    wks.clear()
+    wks.update([df.columns.tolist()] + df.fillna('').values.tolist())
+    st.toast(f"🗑️ Đã xóa khối '{block_name}' khỏi hệ thống!", icon="✅")
+
 def save_block_config(df_current_ui, current_block_name, creds):
     sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
@@ -560,6 +574,7 @@ def save_block_config(df_current_ui, current_block_name, creds):
     if 'STT' in df_to_save.columns: df_to_save = df_to_save.drop(columns=['STT'])
     df_to_save[COL_BLOCK_NAME] = current_block_name 
     
+    # DANH SÁCH 10 CỘT CẦN LƯU
     target_cols = [
         COL_BLOCK_NAME, 
         'Trạng thái', 
@@ -576,31 +591,24 @@ def save_block_config(df_current_ui, current_block_name, creds):
     df_final = pd.concat([df_other_blocks, df_to_save], ignore_index=True)
     df_final = df_final.astype(str).replace(['nan', 'None', '<NA>'], '')
     
+    # Đảm bảo đủ cột
     for c in target_cols:
         if c not in df_final.columns: df_final[c] = ""
     
-    df_final = df_final[target_cols]
+    df_final = df_final[target_cols] # Lọc đúng 10 cột
 
     wks.clear()
     wks.update([df_final.columns.tolist()] + df_final.values.tolist())
     st.toast(f"✅ Đã lưu cấu hình khối: {current_block_name}!", icon="💾")
 
 def save_full_config_direct(df_full, creds):
-    """Hàm lưu toàn bộ Config khi chạy tất cả"""
     sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     
     target_cols = [
-        COL_BLOCK_NAME, 
-        'Trạng thái', 
-        COL_DATA_RANGE, 
-        'Tháng', 
-        'Link dữ liệu lấy dữ liệu', 
-        'Link dữ liệu đích', 
-        'Tên sheet dữ liệu đích', 
-        'Dòng dữ liệu', 
-        'Kết quả', 
-        'Tên sheet nguồn dữ liệu gốc'
+        COL_BLOCK_NAME, 'Trạng thái', COL_DATA_RANGE, 'Tháng', 
+        'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 'Tên sheet dữ liệu đích', 
+        'Dòng dữ liệu', 'Kết quả', 'Tên sheet nguồn dữ liệu gốc'
     ]
     
     df_full = df_full.astype(str).replace(['nan', 'None', '<NA>'], '')
@@ -608,7 +616,6 @@ def save_full_config_direct(df_full, creds):
         if c not in df_full.columns: df_full[c] = ""
     
     df_full = df_full[target_cols]
-    
     wks.clear()
     wks.update([df_full.columns.tolist()] + df_full.values.tolist())
 
@@ -663,12 +670,13 @@ def main_ui():
                 st.rerun()
             elif new_block_input in unique_blocks: st.warning("Tên khối đã tồn tại!")
         
+        # LOGIC XÓA KHỐI (ĐÃ CẬP NHẬT)
         if st.button("🗑️ Xóa Khối Hiện Tại", type="primary"):
             if len(unique_blocks) <= 1: st.error("Không thể xóa khối cuối cùng!")
             else:
-                df_remain = st.session_state['df_full_config'][st.session_state['df_full_config'][COL_BLOCK_NAME] != selected_block]
-                save_block_config(df_remain, "TEMP_DELETE", creds)
-                st.session_state['df_full_config'] = df_remain
+                delete_block_from_server(selected_block, creds)
+                del st.session_state['df_full_config'] # Xóa cache để load lại
+                time.sleep(1)
                 st.rerun()
         
         st.divider()
@@ -755,15 +763,12 @@ def main_ui():
     with col_run_all:
         if st.button("🚀 CHẠY TẤT CẢ CÁC KHỐI"):
             with st.status("Đang chạy toàn bộ hệ thống...", expanded=True) as status:
-                # 1. Lấy dữ liệu gốc
                 full_df = st.session_state['df_full_config'].copy()
                 all_blocks = full_df[COL_BLOCK_NAME].unique()
                 total_all = 0; start_all = time.time()
                 
-                # 2. Chạy từng khối
                 for blk in all_blocks:
                     status.write(f"⏳ Đang xử lý khối: **{blk}**...")
-                    # Lấy rows của block này (Chưa chốt)
                     block_mask = (full_df[COL_BLOCK_NAME] == blk) & (full_df['Trạng thái'] == "Chưa chốt & đang cập nhật")
                     rows_blk = full_df[block_mask].to_dict('records')
                     
@@ -771,26 +776,20 @@ def main_ui():
                         _, results_map, rows_count = process_pipeline(rows_blk, f"{user_id} (AutoAll)", blk)
                         total_all += rows_count
                         
-                        # Cập nhật kết quả vào full_df ngay
                         if results_map:
                             for idx, row in full_df[block_mask].iterrows():
                                 raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
                                 s_link = str(raw_s[0]).strip() if isinstance(raw_s, list) and raw_s else str(raw_s).strip()
-                                
                                 if s_link in results_map:
                                     msg, rng = results_map[s_link]
                                     full_df.at[idx, 'Kết quả'] = msg
                                     full_df.at[idx, 'Dòng dữ liệu'] = rng
                         
                         status.write(f"✅ Xong khối {blk} (+{rows_count} dòng).")
-                    else:
-                        status.write(f"⚪ Khối {blk} không có dữ liệu cần chạy.")
+                    else: status.write(f"⚪ Khối {blk} trống.")
 
-                # 3. Lưu toàn bộ xuống Google Sheet
                 status.write("💾 Đang lưu cập nhật trạng thái...")
                 save_full_config_direct(full_df, creds)
-                
-                # 4. Cập nhật lại session
                 st.session_state['df_full_config'] = full_df
                 
                 status.update(label=f"Đã xong! Tổng {total_all} dòng.", state="complete", expanded=False)
