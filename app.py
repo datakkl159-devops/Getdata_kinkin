@@ -34,10 +34,10 @@ SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
 SHEET_LOG_GITHUB = "log_chay_auto_github"
 
-# --- CẤU HÌNH TÊN CỘT HỆ THỐNG (ĐÃ SỬA) ---
+# Cột hệ thống
 COL_LINK_SRC = "Link file nguồn"
 COL_LABEL_SRC = "Sheet nguồn"
-COL_MONTH_SRC = "Tháng" # Đã sửa thành "Tháng" cho đúng yêu cầu
+COL_MONTH_SRC = "Tháng"
 COL_BLOCK_NAME = "Block_Name"
 COL_DATA_RANGE = "Vùng lấy dữ liệu"
 DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
@@ -56,105 +56,38 @@ def col_name_to_index(col_name):
 def show_guide_popup():
     st.markdown("""
     ### 1. Tổng Quan Hệ Thống
-    Công cụ này giúp tự động hóa quy trình lấy dữ liệu từ nhiều file Google Sheets nguồn (Source) và tổng hợp vào các file đích (Target) mà không cần thao tác thủ công Copy-Paste.
+    Công cụ này giúp tự động hóa quy trình lấy dữ liệu từ nhiều file Google Sheets nguồn (Source) và tổng hợp vào các file đích (Target).
     
-    **Điểm nổi bật:**
-    * Dữ liệu được giữ nguyên định dạng gốc (Text, số 0 ở đầu, ngày tháng...).
-    * Hỗ trợ chia nhóm dữ liệu theo từng Khối (Block) để dễ quản lý.
-    * Cơ chế cập nhật thông minh: Tự động xóa dữ liệu cũ và cập nhật dữ liệu mới nhất.
-
-    ### 2. Giới Hạn & Cách Xử Lý Dữ Liệu Lớn (QUAN TRỌNG)
-    Do giới hạn của Google Sheets và Tài nguyên hệ thống, vui lòng tuân thủ quy tắc sau để tránh lỗi:
-
+    ### 2. Giới Hạn & Cách Xử Lý Dữ Liệu Lớn
     | Trạng Thái | Số Dòng Dữ Liệu | Khuyến Nghị Thao Tác |
     | :--- | :--- | :--- |
-    | ✅ **An Toàn** | **< 200.000 dòng** | • Chạy bình thường.<br>• Có thể dùng tính năng `🚀 CHẠY TẤT CẢ`. |
-    | ⚠️ **Mạo Hiểm** | **> 300.000 dòng** | • **Nguy cơ:** Có thể bị đơ hoặc sập do đầy bộ nhớ.<br>• **Giải pháp:** Chỉ bấm `▶️ CHẠY KHỐI` (chạy từng khối một), tuyệt đối không bấm Chạy tất cả. |
-    | ⛔ **Không Thể** | **> 500.000 dòng** | • **Nguy cơ:** Vượt quá giới hạn ghi của Google Sheet (Timeout).<br>• **Giải pháp:** Bắt buộc phải **Tách File Đích** (Ví dụ: Tách thành Data_Quy1, Data_Quy2...) hoặc **Giới hạn cột** (chỉ lấy cột A:D thay vì lấy hết). |
-
-    ---
+    | ✅ **An Toàn** | **< 200.000 dòng** | Chạy bình thường. Dùng được `🚀 CHẠY TẤT CẢ`. |
+    | ⚠️ **Mạo Hiểm** | **> 300.000 dòng** | Chỉ bấm `▶️ CHẠY KHỐI`. Tránh chạy tất cả để không tràn bộ nhớ. |
+    | ⛔ **Không Thể** | **> 500.000 dòng** | Phải tách file đích hoặc giới hạn vùng lấy cột (VD: A:E). |
 
     ### 3. Các Bước Thao Tác
-
-    #### Bước 1: Đăng Nhập & Chọn Khối Làm Việc
-    Tại thanh menu bên trái (Sidebar):
-    * **Đăng nhập:** Nhập mật khẩu được cấp để truy cập hệ thống.
-    * **Chọn Khối:** Tại mục "Chọn Khối làm việc", chọn tên khối bạn muốn thao tác (Ví dụ: Marketing, Sale, Kế toán...).
-    * **Tạo Khối Mới (Nếu cần):** Nhập tên vào ô "Tên khối mới" -> Bấm nút `➕ Thêm Khối Mới`.
-    * **Xóa Khối:** Bấm nút `🗑️ Xóa Khối Hiện Tại` nếu muốn xóa toàn bộ cấu hình của khối đó (Lưu ý: Dữ liệu sẽ mất vĩnh viễn).
-
-    #### Bước 2: Cấu Hình Nguồn Dữ Liệu
-    Tại bảng điều khiển chính, bạn nhập thông tin vào các cột như sau:
-    """)
-    
-    st.markdown("""
-    | Tên Cột | Hướng Dẫn Nhập Liệu |
-    | :--- | :--- |
-    | **STT** | Số thứ tự (Tự động, không cần nhập). |
-    | **Trạng thái** | • Chọn `Chưa chốt & đang cập nhật`: Tool sẽ chạy dòng này.<br>• Chọn `Đã chốt`: Tool sẽ bỏ qua dòng này. |
-    | **Vùng lấy dữ liệu** | • Nhập vùng cột muốn lấy (Ví dụ: `A:D`, `A:Z`).<br>• **Để trống**: Mặc định lấy toàn bộ bảng dữ liệu. |
-    | **Tháng** | Nhập tháng để phân loại (VD: `10/2023`). |
-    | **Link Nguồn** | Dán đường link file Google Sheet chứa dữ liệu gốc. |
-    | **Link Đích** | Dán đường link file Google Sheet nơi dữ liệu sẽ đổ về. |
-    | **Tên sheet đích** | Tên tab (sheet) trong file đích sẽ lưu dữ liệu. |
-    | **Tên sheet nguồn** | Tên tab (sheet) trong file gốc cần lấy dữ liệu (VD: `Sheet1`). |
-    """)
-
-    st.markdown("""
-    Sau khi nhập xong, bấm nút `💾 Lưu` ở góc dưới bên phải để lưu cấu hình.
-
-    #### Bước 3: Cấp Quyền Cho Bot (Bắt Buộc)
-    Để Bot có thể đọc file nguồn và ghi vào file đích, bạn cần chia sẻ quyền truy cập.
-    
-    1. **Copy email của Bot:**
-    """)
-    st.code(BOT_EMAIL_DISPLAY, language="text")
-    st.markdown("""
-    2. **Tại File Nguồn:** Chọn Share (Chia sẻ) -> Dán email Bot -> Chọn quyền **Viewer (Người xem)**.
-    3. **Tại File Đích:** Chọn Share (Chia sẻ) -> Dán email Bot -> Chọn quyền **Editor (Người chỉnh sửa)**.
-    4. **Kiểm tra:** Quay lại tool, bấm nút `🔍 Quét Quyền`.
-       * Nếu hiện ✅ Xanh: Đã thành công.
-       * Nếu hiện ❌ Đỏ: Vui lòng kiểm tra lại xem đã share đúng email chưa.
-
-    #### Bước 4: Thực Thi Lấy Dữ Liệu
-    Bạn có 2 lựa chọn để chạy dữ liệu:
-    * **Cách 1: Chạy từng khối (Khuyên dùng)**
-        * Bấm nút `▶️ CHẠY KHỐI: [Tên_Khối]`.
-        * Hệ thống chỉ chạy các dòng có trạng thái "Chưa chốt" trong khối đang chọn.
-        * Theo dõi cột "Kết quả" để biết trạng thái (Thành công/Lỗi).
-    * **Cách 2: Chạy toàn bộ hệ thống**
-        * Bấm nút `🚀 CHẠY TẤT CẢ CÁC KHỐI`.
-        * Hệ thống sẽ chạy lần lượt qua tất cả các khối có trong cấu hình.
-
-    #### Bước 5: Cài Đặt Lịch Chạy Tự Động (Hẹn Giờ)
-    Tại thanh menu bên trái, mục **⏰ Cài Đặt Hẹn Giờ**:
-    1. Chọn tần suất: *Hàng ngày / Hàng tuần / Hàng tháng*.
-    2. Kéo thanh trượt để chọn giờ chạy (Giờ Việt Nam).
-    3. Bấm `Lưu Hẹn Giờ`. Hệ thống sẽ tự động kích hoạt Bot chạy ngầm theo lịch này.
-    """)
+    * **Bước 1:** Đăng nhập và chọn Khối làm việc bên trái.
+    * **Bước 2:** Nhập cấu hình vào bảng (Link nguồn, Link đích, Tên sheet...).
+    * **Bước 3 - Quan Trọng:** Cấp quyền cho Bot.
+        1. Copy email Bot: `%s`
+        2. Share quyền **Viewer** cho file Nguồn.
+        3. Share quyền **Editor** cho file Đích.
+    * **Bước 4:** Bấm **Lưu** rồi bấm **Chạy**. Tool sẽ tự động kiểm tra quyền trước khi chạy.
+    """ % BOT_EMAIL_DISPLAY)
 
 def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
-
     if "auto_key" in st.query_params:
         key = st.query_params["auto_key"]
         if key in AUTHORIZED_USERS:
-            st.session_state['logged_in'] = True
-            st.session_state['current_user_id'] = AUTHORIZED_USERS[key]
-            return True
-
+            st.session_state['logged_in'] = True; st.session_state['current_user_id'] = AUTHORIZED_USERS[key]; return True
     if st.session_state['logged_in']: return True
-
     st.header("🔒 Đăng nhập hệ thống")
     pwd = st.text_input("Nhập mật khẩu truy cập:", type="password")
     if st.button("Đăng Nhập"):
         if pwd in AUTHORIZED_USERS:
-            st.session_state['logged_in'] = True
-            st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]
-            st.toast(f"Xin chào {AUTHORIZED_USERS[pwd]}!", icon="👋")
-            time.sleep(0.5)
-            st.rerun()
+            st.session_state['logged_in'] = True; st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]; st.rerun()
         else: st.error("Mật khẩu không đúng!")
     return False
 
@@ -164,16 +97,14 @@ def get_creds():
         try: creds_info = json.loads(raw_creds)
         except: return None
     else: creds_info = dict(raw_creds)
-    if "private_key" in creds_info: 
-        creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+    if "private_key" in creds_info: creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def get_sh_with_retry(creds, sheet_id_or_key):
     gc = gspread.authorize(creds)
     max_retries = 3
     for i in range(max_retries):
-        try:
-            return gc.open_by_key(sheet_id_or_key)
+        try: return gc.open_by_key(sheet_id_or_key)
         except Exception as e:
             if i == max_retries - 1: raise e
             time.sleep((2 ** i) + random.random()) 
@@ -262,7 +193,7 @@ def check_permissions_strict(rows_to_run, creds):
     if errs: return False, errs
     return True, []
 
-# --- 5. TẢI DATA & XỬ LÝ (FIXED COLUMN THÁNG) ---
+# --- 5. TẢI DATA & XỬ LÝ ---
 def fetch_data_preserve_columns(row_config, creds):
     if not isinstance(row_config, dict): return None, "Lỗi Config", "Lỗi Config"
     link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', '')).strip()
@@ -316,7 +247,6 @@ def fetch_data_preserve_columns(row_config, creds):
         return None, sheet_id, f"Lỗi tải data: {str(e)}"
 
     if df is not None:
-        # BỔ SUNG ĐẦY ĐỦ 3 CỘT VÀO CUỐI
         df[COL_LINK_SRC] = link_src
         df[COL_LABEL_SRC] = source_label
         df[COL_MONTH_SRC] = month_val
@@ -591,21 +521,30 @@ def save_block_config(df_current_ui, current_block_name, creds):
     
     df_final = pd.concat([df_other_blocks, df_to_save], ignore_index=True)
     df_final = df_final.astype(str).replace(['nan', 'None', '<NA>'], '')
+    
     for c in target_cols:
         if c not in df_final.columns: df_final[c] = ""
-    df_final = df_final[target_cols]
     
+    df_final = df_final[target_cols]
     wks.clear()
     wks.update([df_final.columns.tolist()] + df_final.values.tolist())
     st.toast(f"✅ Đã lưu cấu hình khối: {current_block_name}!", icon="💾")
 
 def save_full_config_direct(df_full, creds):
+    """Lưu toàn bộ config 10 cột chuẩn"""
     sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
-    target_cols = [COL_BLOCK_NAME, 'Trạng thái', COL_DATA_RANGE, 'Tháng', 'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 'Tên sheet dữ liệu đích', 'Dòng dữ liệu', 'Kết quả', 'Tên sheet nguồn dữ liệu gốc']
+    
+    target_cols = [
+        COL_BLOCK_NAME, 'Trạng thái', COL_DATA_RANGE, 'Tháng', 
+        'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 'Tên sheet dữ liệu đích', 
+        'Dòng dữ liệu', 'Kết quả', 'Tên sheet nguồn dữ liệu gốc'
+    ]
+    
     df_full = df_full.astype(str).replace(['nan', 'None', '<NA>'], '')
     for c in target_cols:
         if c not in df_full.columns: df_full[c] = ""
+    
     df_full = df_full[target_cols]
     wks.clear()
     wks.update([df_full.columns.tolist()] + df_full.values.tolist())
@@ -765,16 +704,20 @@ def main_ui():
     with col_run_all:
         if st.button("🚀 CHẠY TẤT CẢ CÁC KHỐI"):
             with st.status("Đang chạy toàn bộ hệ thống...", expanded=True) as status:
-                full_df = st.session_state['df_full_config'].copy()
+                # 1. Tải bản config mới nhất từ server để đảm bảo dữ liệu
+                full_df = load_full_config(creds)
                 all_blocks = full_df[COL_BLOCK_NAME].unique()
                 total_all = 0; start_all = time.time()
                 
+                # 2. Duyệt từng khối
                 for blk in all_blocks:
                     status.write(f"⏳ Đang xử lý khối: **{blk}**...")
+                    # Lấy rows của block này (Chưa chốt)
                     block_mask = (full_df[COL_BLOCK_NAME] == blk) & (full_df['Trạng thái'] == "Chưa chốt & đang cập nhật")
                     rows_blk = full_df[block_mask].to_dict('records')
                     
                     if rows_blk:
+                        # Check quyền trước khi chạy khối này
                         ok_check, err_list = check_permissions_strict(rows_blk, creds)
                         if not ok_check:
                             status.write(f"❌ Khối {blk} bị bỏ qua do lỗi quyền (Xem chi tiết log).")
@@ -783,20 +726,27 @@ def main_ui():
                         _, results_map, rows_count = process_pipeline(rows_blk, f"{user_id} (AutoAll)", blk)
                         total_all += rows_count
                         
+                        # CẬP NHẬT KẾT QUẢ VÀO FULL_DF (FIX LOGIC TẠI ĐÂY)
                         if results_map:
-                            for idx, row in full_df[block_mask].iterrows():
-                                raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
-                                s_link = str(raw_s[0]).strip() if isinstance(raw_s, list) and raw_s else str(raw_s).strip()
-                                if s_link in results_map:
-                                    msg, rng = results_map[s_link]
-                                    full_df.at[idx, 'Kết quả'] = msg
-                                    full_df.at[idx, 'Dòng dữ liệu'] = rng
+                            # Duyệt qua toàn bộ full_df để update đúng dòng
+                            for idx, row in full_df.iterrows():
+                                # Chỉ update nếu đúng Block và Link Nguồn có trong kết quả trả về
+                                if row[COL_BLOCK_NAME] == blk:
+                                    s_link = str(row['Link dữ liệu lấy dữ liệu']).strip()
+                                    if s_link in results_map:
+                                        msg, rng = results_map[s_link]
+                                        full_df.at[idx, 'Kết quả'] = msg
+                                        full_df.at[idx, 'Dòng dữ liệu'] = rng
                         
                         status.write(f"✅ Xong khối {blk} (+{rows_count} dòng).")
-                    else: status.write(f"⚪ Khối {blk} không có dữ liệu cần chạy.")
+                    else:
+                        status.write(f"⚪ Khối {blk} không có dữ liệu cần chạy.")
 
+                # 3. Lưu toàn bộ xuống Google Sheet (QUAN TRỌNG)
                 status.write("💾 Đang lưu cập nhật trạng thái...")
                 save_full_config_direct(full_df, creds)
+                
+                # 4. Cập nhật lại session để hiển thị đúng
                 st.session_state['df_full_config'] = full_df
                 
                 status.update(label=f"Đã xong! Tổng {total_all} dòng.", state="complete", expanded=False)
