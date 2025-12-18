@@ -44,7 +44,7 @@ DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- 2. HÀM HỖ TRỢ & POPUP HƯỚNG DẪN ---
+# --- 2. HÀM HỖ TRỢ & HƯỚNG DẪN SỬ DỤNG (NỘI DUNG CHỐT) ---
 def col_name_to_index(col_name):
     col_name = col_name.upper()
     index = 0
@@ -52,60 +52,98 @@ def col_name_to_index(col_name):
         index = index * 26 + (ord(char) - ord('A')) + 1
     return index - 1
 
-@st.dialog("📘 TÀI LIỆU HƯỚNG DẪN SỬ DỤNG DASHBOARD", width="large")
+@st.dialog("📘 TÀI LIỆU HƯỚNG DẪN SỬ DỤNG TOOL QUẢN LÝ DATA", width="large")
 def show_guide_popup():
     st.markdown("""
-    ### 1. Tổng Quan
-    Tool này giúp tự động hóa việc lấy dữ liệu từ nhiều file Google Sheets nguồn (Source) và gộp vào các file đích (Target) tương ứng. Dữ liệu được giữ nguyên định dạng (số 0 đầu, ngày tháng...).
-
-    ### 2. Quản Lý Khối (Block)
-    Hệ thống chia dữ liệu thành các **Khối (Block)** để dễ quản lý (VD: Khối Marketing, Khối Sale, Khối Kế toán...).
-    * **Thêm Khối:** Nhập tên vào ô "Tên khối mới" và bấm ➕.
-    * **Xóa Khối:** Chọn khối cần xóa và bấm 🗑️ (Cẩn thận: Dữ liệu cấu hình của khối đó sẽ mất vĩnh viễn).
-
-    ### 3. Cấu Hình Lấy Dữ Liệu
-    Trên bảng nhập liệu, bạn cần điền các thông tin sau:
+    ### 1. Tổng Quan Hệ Thống
+    Công cụ này giúp tự động hóa quy trình lấy dữ liệu từ nhiều file Google Sheets nguồn (Source) và tổng hợp vào các file đích (Target) mà không cần thao tác thủ công Copy-Paste.
     
-    | Cột | Giải thích |
+    **Điểm nổi bật:**
+    * Dữ liệu được giữ nguyên định dạng gốc (Text, số 0 ở đầu, ngày tháng...).
+    * Hỗ trợ chia nhóm dữ liệu theo từng Khối (Block) để dễ quản lý.
+    * Cơ chế cập nhật thông minh: Tự động xóa dữ liệu cũ và cập nhật dữ liệu mới nhất.
+
+    ### 2. Các Bước Thao Tác
+
+    #### Bước 1: Đăng Nhập & Chọn Khối Làm Việc
+    Tại thanh menu bên trái (Sidebar):
+    * **Đăng nhập:** Nhập mật khẩu được cấp để truy cập hệ thống.
+    * **Chọn Khối:** Tại mục "Chọn Khối làm việc", chọn tên khối bạn muốn thao tác (Ví dụ: Marketing, Sale, Kế toán...).
+    * **Tạo Khối Mới (Nếu cần):** Nhập tên vào ô "Tên khối mới" -> Bấm nút `➕ Thêm Khối Mới`.
+    * **Xóa Khối:** Bấm nút `🗑️ Xóa Khối Hiện Tại` nếu muốn xóa toàn bộ cấu hình của khối đó (Lưu ý: Dữ liệu sẽ mất vĩnh viễn).
+
+    #### Bước 2: Cấu Hình Nguồn Dữ Liệu
+    Tại bảng điều khiển chính, bạn nhập thông tin vào các cột như sau:
+    """)
+    
+    st.markdown("""
+    | Tên Cột | Hướng Dẫn Nhập Liệu |
     | :--- | :--- |
-    | **Trạng thái** | Chọn `Chưa chốt & đang cập nhật` để tool chạy dòng này. Nếu chọn `Đã chốt`, tool sẽ bỏ qua. |
-    | **Vùng lấy dữ liệu** | **QUAN TRỌNG:** Điền vùng cột cần lấy (VD: `A:D`, `A:Z`). Nếu để trống, tool mặc định **Lấy hết**. |
-    | **Tháng** | Nhập tháng dữ liệu (VD: `10/2023`) để phân loại. |
-    | **Link Nguồn** | Link file Google Sheet chứa dữ liệu gốc. |
-    | **Link Đích** | Link file Google Sheet nơi dữ liệu sẽ đổ về. |
-    | **Tên sheet nguồn** | Tên tab (sheet) trong file gốc cần lấy (VD: `Sheet1`, `Data`). |
-    | **Tên sheet đích** | Tên tab trong file đích sẽ lưu dữ liệu. |
+    | **STT** | Số thứ tự (Tự động, không cần nhập). |
+    | **Trạng thái** | • Chọn `Chưa chốt & đang cập nhật`: Tool sẽ chạy dòng này.<br>• Chọn `Đã chốt`: Tool sẽ bỏ qua dòng này. |
+    | **Vùng lấy dữ liệu** | • Nhập vùng cột muốn lấy (Ví dụ: `A:D`, `A:Z`).<br>• **Để trống**: Mặc định lấy toàn bộ bảng dữ liệu. |
+    | **Tháng** | Nhập tháng để phân loại (VD: `10/2023`). |
+    | **Link Nguồn** | Dán đường link file Google Sheet chứa dữ liệu gốc. |
+    | **Link Đích** | Dán đường link file Google Sheet nơi dữ liệu sẽ đổ về. |
+    | **Tên sheet đích** | Tên tab (sheet) trong file đích sẽ lưu dữ liệu. |
+    | **Tên sheet nguồn** | Tên tab (sheet) trong file gốc cần lấy dữ liệu (VD: `Sheet1`). |
+    """)
 
-    ### 4. Các Chức Năng Chính
-    * **▶️ CHẠY KHỐI...**: Chỉ chạy các dòng "Chưa chốt" trong khối đang chọn.
-    * **🚀 CHẠY TẤT CẢ**: Chạy lần lượt toàn bộ các khối có trong hệ thống.
-    * **🔍 Quét Quyền**: Kiểm tra xem Bot đã có quyền truy cập vào Link Nguồn/Đích chưa.
-    * **💾 Lưu**: Lưu lại các thay đổi cấu hình lên Server.
+    st.markdown("""
+    Sau khi nhập xong, bấm nút `💾 Lưu` ở góc dưới bên phải để lưu cấu hình.
 
-    ### 5. Xử Lý Lỗi Quyền (Permission)
-    Nếu nút **Quét Quyền** báo đỏ, bạn cần chia sẻ quyền cho Bot:
-    1.  Copy email Bot: `%s`
-    2.  Vào file **Nguồn**: Share quyền **Viewer (Người xem)**.
-    3.  Vào file **Đích**: Share quyền **Editor (Người chỉnh sửa)**.
+    #### Bước 3: Cấp Quyền Cho Bot (Bắt Buộc)
+    Để Bot có thể đọc file nguồn và ghi vào file đích, bạn cần chia sẻ quyền truy cập.
+    
+    1. **Copy email của Bot:**
+    """)
+    st.code(BOT_EMAIL_DISPLAY, language="text")
+    st.markdown("""
+    2. **Tại File Nguồn:** Chọn Share (Chia sẻ) -> Dán email Bot -> Chọn quyền **Viewer (Người xem)**.
+    3. **Tại File Đích:** Chọn Share (Chia sẻ) -> Dán email Bot -> Chọn quyền **Editor (Người chỉnh sửa)**.
+    4. **Kiểm tra:** Quay lại tool, bấm nút `🔍 Quét Quyền`.
+       * Nếu hiện ✅ Xanh: Đã thành công.
+       * Nếu hiện ❌ Đỏ: Vui lòng kiểm tra lại xem đã share đúng email chưa.
 
-    ### 6. Hẹn Giờ Tự Động
-    * Chọn tần suất (Hàng ngày/tuần/tháng) và Giờ chạy.
-    * Bấm **Lưu Hẹn Giờ**. Hệ thống Github Action sẽ tự động chạy theo lịch này.
-    """ % BOT_EMAIL_DISPLAY)
+    #### Bước 4: Thực Thi Lấy Dữ Liệu
+    Bạn có 2 lựa chọn để chạy dữ liệu:
+    * **Cách 1: Chạy từng khối (Khuyên dùng)**
+        * Bấm nút `▶️ CHẠY KHỐI: [Tên_Khối]`.
+        * Hệ thống chỉ chạy các dòng có trạng thái "Chưa chốt" trong khối đang chọn.
+        * Theo dõi cột "Kết quả" để biết trạng thái (Thành công/Lỗi).
+    * **Cách 2: Chạy toàn bộ hệ thống**
+        * Bấm nút `🚀 CHẠY TẤT CẢ CÁC KHỐI`.
+        * Hệ thống sẽ chạy lần lượt qua tất cả các khối có trong cấu hình.
+
+    #### Bước 5: Cài Đặt Lịch Chạy Tự Động (Hẹn Giờ)
+    Tại thanh menu bên trái, mục **⏰ Cài Đặt Hẹn Giờ**:
+    1. Chọn tần suất: *Hàng ngày / Hàng tuần / Hàng tháng*.
+    2. Kéo thanh trượt để chọn giờ chạy (Giờ Việt Nam).
+    3. Bấm `Lưu Hẹn Giờ`. Hệ thống sẽ tự động kích hoạt Bot chạy ngầm theo lịch này.
+    """)
 
 def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
+
     if "auto_key" in st.query_params:
         key = st.query_params["auto_key"]
         if key in AUTHORIZED_USERS:
-            st.session_state['logged_in'] = True; st.session_state['current_user_id'] = AUTHORIZED_USERS[key]; return True
+            st.session_state['logged_in'] = True
+            st.session_state['current_user_id'] = AUTHORIZED_USERS[key]
+            return True
+
     if st.session_state['logged_in']: return True
+
     st.header("🔒 Đăng nhập hệ thống")
     pwd = st.text_input("Nhập mật khẩu truy cập:", type="password")
     if st.button("Đăng Nhập"):
         if pwd in AUTHORIZED_USERS:
-            st.session_state['logged_in'] = True; st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]; st.rerun()
+            st.session_state['logged_in'] = True
+            st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]
+            st.toast(f"Xin chào {AUTHORIZED_USERS[pwd]}!", icon="👋")
+            time.sleep(0.5)
+            st.rerun()
         else: st.error("Mật khẩu không đúng!")
     return False
 
@@ -115,14 +153,16 @@ def get_creds():
         try: creds_info = json.loads(raw_creds)
         except: return None
     else: creds_info = dict(raw_creds)
-    if "private_key" in creds_info: creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+    if "private_key" in creds_info: 
+        creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def get_sh_with_retry(creds, sheet_id_or_key):
     gc = gspread.authorize(creds)
     max_retries = 3
     for i in range(max_retries):
-        try: return gc.open_by_key(sheet_id_or_key)
+        try:
+            return gc.open_by_key(sheet_id_or_key)
         except Exception as e:
             if i == max_retries - 1: raise e
             time.sleep((2 ** i) + random.random()) 
@@ -443,7 +483,7 @@ def process_pipeline(rows_to_run, user_id, block_name_run):
     finally:
         set_system_lock(creds, user_id, lock=False)
 
-# --- 6. QUẢN LÝ BLOCK ---
+# --- 6. QUẢN LÝ BLOCK & QUÉT QUYỀN ---
 def man_scan(df):
     """Hàm quét quyền"""
     creds = get_creds()
@@ -711,25 +751,6 @@ def main_ui():
             save_block_config(edited_df, selected_block, creds)
             del st.session_state['df_full_config']
             st.rerun()
-
-# --- HÀM POPUP HƯỚNG DẪN (ĐẶT Ở CUỐI ĐỂ TRÁNH LỖI) ---
-@st.dialog("📘 TÀI LIỆU HƯỚNG DẪN", width="large")
-def show_guide_popup():
-    st.markdown("""
-    ### 1. Tổng Quan
-    Tool tự động lấy dữ liệu từ Google Sheets nguồn và đổ về đích.
-    
-    ### 2. Cấu Hình
-    | Cột | Ý nghĩa |
-    |---|---|
-    | **Vùng lấy dữ liệu** | VD: `A:D`. Để trống = Lấy hết. |
-    | **Link Nguồn/Đích** | Copy link file Google Sheet. |
-    | **Sheet Nguồn/Đích** | Tên tab cụ thể (VD: `Sheet1`). |
-
-    ### 3. Lưu ý quan trọng
-    * **Cấp quyền:** Bot phải có quyền **Xem (Link nguồn)** và **Sửa (Link đích)**.
-    * **Dữ liệu:** Tool giữ nguyên định dạng gốc (text, số 0 đầu...).
-    """)
 
 if __name__ == "__main__":
     main_ui()
