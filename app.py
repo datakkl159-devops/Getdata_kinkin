@@ -24,7 +24,7 @@ AUTHORIZED_USERS = {
     "team_hcm": "Team_HCM"
 }
 
-# EMAIL BOT (Để hiển thị khi thiếu quyền)
+# EMAIL BOT
 BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 
 # Tên các Sheet
@@ -149,7 +149,7 @@ def write_detailed_log(creds, history_sheet_id, log_data_list):
         wks.append_rows(log_data_list)
     except Exception as e: print(f"Lỗi log: {e}")
 
-# --- 4. TẢI DATA & XỬ LÝ (GIỮ NGUYÊN) ---
+# --- 4. TẢI DATA & XỬ LÝ ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi/Sai định dạng"
@@ -415,7 +415,7 @@ def process_pipeline(rows_to_run, user_id, block_name_run):
 
 # --- 6. QUẢN LÝ BLOCK & QUÉT QUYỀN ---
 def man_scan(df):
-    """Hàm quét quyền và báo lỗi cụ thể"""
+    """Hàm quét quyền"""
     creds = get_creds()
     errs = []
     for idx, row in df.iterrows():
@@ -479,17 +479,28 @@ def save_block_config(df_current_ui, current_block_name, creds):
     if 'STT' in df_to_save.columns: df_to_save = df_to_save.drop(columns=['STT'])
     df_to_save[COL_BLOCK_NAME] = current_block_name 
     
-    cols_priority = [COL_BLOCK_NAME, 'Trạng thái', COL_DATA_RANGE, 'Tháng', 'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 'Tên sheet dữ liệu đích', 'Dòng dữ liệu', 'User_ID', 'Kết quả']
+    # DANH SÁCH CỘT CẦN LƯU (10 Cột)
+    target_cols = [
+        COL_BLOCK_NAME, 
+        'Trạng thái', 
+        COL_DATA_RANGE, 
+        'Tháng', 
+        'Link dữ liệu lấy dữ liệu', 
+        'Link dữ liệu đích', 
+        'Tên sheet dữ liệu đích', 
+        'Dòng dữ liệu', 
+        'Kết quả', 
+        'Tên sheet nguồn dữ liệu gốc'
+    ]
     
     df_final = pd.concat([df_other_blocks, df_to_save], ignore_index=True)
     df_final = df_final.astype(str).replace(['nan', 'None', '<NA>'], '')
     
-    for c in cols_priority:
+    # Đảm bảo đủ cột và chỉ lấy các cột này
+    for c in target_cols:
         if c not in df_final.columns: df_final[c] = ""
     
-    remaining_cols = [c for c in df_final.columns if c not in cols_priority]
-    final_col_order = cols_priority + remaining_cols
-    df_final = df_final[final_col_order]
+    df_final = df_final[target_cols] # Lọc đúng 10 cột
 
     wks.clear()
     wks.update([df_final.columns.tolist()] + df_final.values.tolist())
