@@ -44,7 +44,7 @@ DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- 2. HÀM HỖ TRỢ & HƯỚNG DẪN SỬ DỤNG (CẬP NHẬT MỚI) ---
+# --- 2. HÀM HỖ TRỢ & HƯỚNG DẪN SỬ DỤNG ---
 def col_name_to_index(col_name):
     col_name = col_name.upper()
     index = 0
@@ -92,7 +92,7 @@ def show_guide_popup():
     | :--- | :--- |
     | **STT** | Số thứ tự (Tự động, không cần nhập). |
     | **Trạng thái** | • Chọn `Chưa chốt & đang cập nhật`: Tool sẽ chạy dòng này.<br>• Chọn `Đã chốt`: Tool sẽ bỏ qua dòng này. |
-    | **Vùng lấy dữ liệu** | • Nhập vùng cột muốn lấy (Ví dụ: `A:D`, `A:Z`).<br>• **Để trống**: Mặc định lấy toàn bộ bảng dữ liệu. (Nên điền cụ thể để chạy nhanh hơn). |
+    | **Vùng lấy dữ liệu** | • Nhập vùng cột muốn lấy (Ví dụ: `A:D`, `A:Z`).<br>• **Để trống**: Mặc định lấy toàn bộ bảng dữ liệu. |
     | **Tháng** | Nhập tháng để phân loại (VD: `10/2023`). |
     | **Link Nguồn** | Dán đường link file Google Sheet chứa dữ liệu gốc. |
     | **Link Đích** | Dán đường link file Google Sheet nơi dữ liệu sẽ đổ về. |
@@ -560,7 +560,6 @@ def save_block_config(df_current_ui, current_block_name, creds):
     if 'STT' in df_to_save.columns: df_to_save = df_to_save.drop(columns=['STT'])
     df_to_save[COL_BLOCK_NAME] = current_block_name 
     
-    # DANH SÁCH 10 CỘT CẦN LƯU (ĐÚNG THỨ TỰ)
     target_cols = [
         COL_BLOCK_NAME, 
         'Trạng thái', 
@@ -577,15 +576,41 @@ def save_block_config(df_current_ui, current_block_name, creds):
     df_final = pd.concat([df_other_blocks, df_to_save], ignore_index=True)
     df_final = df_final.astype(str).replace(['nan', 'None', '<NA>'], '')
     
-    # Đảm bảo đủ cột và chỉ lấy các cột này
     for c in target_cols:
         if c not in df_final.columns: df_final[c] = ""
     
-    df_final = df_final[target_cols] # Lọc đúng 10 cột
+    df_final = df_final[target_cols]
 
     wks.clear()
     wks.update([df_final.columns.tolist()] + df_final.values.tolist())
     st.toast(f"✅ Đã lưu cấu hình khối: {current_block_name}!", icon="💾")
+
+def save_full_config_direct(df_full, creds):
+    """Hàm lưu toàn bộ Config khi chạy tất cả"""
+    sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
+    wks = sh.worksheet(SHEET_CONFIG_NAME)
+    
+    target_cols = [
+        COL_BLOCK_NAME, 
+        'Trạng thái', 
+        COL_DATA_RANGE, 
+        'Tháng', 
+        'Link dữ liệu lấy dữ liệu', 
+        'Link dữ liệu đích', 
+        'Tên sheet dữ liệu đích', 
+        'Dòng dữ liệu', 
+        'Kết quả', 
+        'Tên sheet nguồn dữ liệu gốc'
+    ]
+    
+    df_full = df_full.astype(str).replace(['nan', 'None', '<NA>'], '')
+    for c in target_cols:
+        if c not in df_full.columns: df_full[c] = ""
+    
+    df_full = df_full[target_cols]
+    
+    wks.clear()
+    wks.update([df_full.columns.tolist()] + df_full.values.tolist())
 
 def load_sys_schedule(creds):
     try:
@@ -646,7 +671,6 @@ def main_ui():
                 st.session_state['df_full_config'] = df_remain
                 st.rerun()
         
-        # Nút Hướng dẫn sử dụng
         st.divider()
         if st.button("📘 Tài liệu Hướng Dẫn"):
             show_guide_popup()
@@ -731,20 +755,47 @@ def main_ui():
     with col_run_all:
         if st.button("🚀 CHẠY TẤT CẢ CÁC KHỐI"):
             with st.status("Đang chạy toàn bộ hệ thống...", expanded=True) as status:
-                full_df = st.session_state['df_full_config']
+                # 1. Lấy dữ liệu gốc
+                full_df = st.session_state['df_full_config'].copy()
                 all_blocks = full_df[COL_BLOCK_NAME].unique()
                 total_all = 0; start_all = time.time()
+                
+                # 2. Chạy từng khối
                 for blk in all_blocks:
-                    status.write(f"⏳ Khối: **{blk}**...")
-                    rows_blk = full_df[(full_df[COL_BLOCK_NAME] == blk) & (full_df['Trạng thái'] == "Chưa chốt & đang cập nhật")].to_dict('records')
-                    rows_blk = [r for r in rows_blk if len(str(r.get('Link dữ liệu lấy dữ liệu', ''))) > 5]
+                    status.write(f"⏳ Đang xử lý khối: **{blk}**...")
+                    # Lấy rows của block này (Chưa chốt)
+                    block_mask = (full_df[COL_BLOCK_NAME] == blk) & (full_df['Trạng thái'] == "Chưa chốt & đang cập nhật")
+                    rows_blk = full_df[block_mask].to_dict('records')
+                    
                     if rows_blk:
-                        _, _, rows_count = process_pipeline(rows_blk, f"{user_id} (AutoAll)", blk)
+                        _, results_map, rows_count = process_pipeline(rows_blk, f"{user_id} (AutoAll)", blk)
                         total_all += rows_count
+                        
+                        # Cập nhật kết quả vào full_df ngay
+                        if results_map:
+                            for idx, row in full_df[block_mask].iterrows():
+                                raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
+                                s_link = str(raw_s[0]).strip() if isinstance(raw_s, list) and raw_s else str(raw_s).strip()
+                                
+                                if s_link in results_map:
+                                    msg, rng = results_map[s_link]
+                                    full_df.at[idx, 'Kết quả'] = msg
+                                    full_df.at[idx, 'Dòng dữ liệu'] = rng
+                        
                         status.write(f"✅ Xong khối {blk} (+{rows_count} dòng).")
-                    else: status.write(f"⚪ Khối {blk} trống.")
+                    else:
+                        status.write(f"⚪ Khối {blk} không có dữ liệu cần chạy.")
+
+                # 3. Lưu toàn bộ xuống Google Sheet
+                status.write("💾 Đang lưu cập nhật trạng thái...")
+                save_full_config_direct(full_df, creds)
+                
+                # 4. Cập nhật lại session
+                st.session_state['df_full_config'] = full_df
+                
                 status.update(label=f"Đã xong! Tổng {total_all} dòng.", state="complete", expanded=False)
                 st.toast(f"Xong tất cả! Tổng {total_all} dòng. {time.time()-start_all:.2f}s", icon="🏁")
+                time.sleep(1); st.rerun()
 
     with col_scan:
         if st.button("🔍 Quét Quyền"):
