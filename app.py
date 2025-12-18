@@ -44,7 +44,7 @@ DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- 2. HÀM HỖ TRỢ ---
+# --- 2. HÀM HỖ TRỢ & POPUP HƯỚNG DẪN ---
 def col_name_to_index(col_name):
     col_name = col_name.upper()
     index = 0
@@ -52,28 +52,60 @@ def col_name_to_index(col_name):
         index = index * 26 + (ord(char) - ord('A')) + 1
     return index - 1
 
+@st.dialog("📘 TÀI LIỆU HƯỚNG DẪN SỬ DỤNG DASHBOARD", width="large")
+def show_guide_popup():
+    st.markdown("""
+    ### 1. Tổng Quan
+    Tool này giúp tự động hóa việc lấy dữ liệu từ nhiều file Google Sheets nguồn (Source) và gộp vào các file đích (Target) tương ứng. Dữ liệu được giữ nguyên định dạng (số 0 đầu, ngày tháng...).
+
+    ### 2. Quản Lý Khối (Block)
+    Hệ thống chia dữ liệu thành các **Khối (Block)** để dễ quản lý (VD: Khối Marketing, Khối Sale, Khối Kế toán...).
+    * **Thêm Khối:** Nhập tên vào ô "Tên khối mới" và bấm ➕.
+    * **Xóa Khối:** Chọn khối cần xóa và bấm 🗑️ (Cẩn thận: Dữ liệu cấu hình của khối đó sẽ mất vĩnh viễn).
+
+    ### 3. Cấu Hình Lấy Dữ Liệu
+    Trên bảng nhập liệu, bạn cần điền các thông tin sau:
+    
+    | Cột | Giải thích |
+    | :--- | :--- |
+    | **Trạng thái** | Chọn `Chưa chốt & đang cập nhật` để tool chạy dòng này. Nếu chọn `Đã chốt`, tool sẽ bỏ qua. |
+    | **Vùng lấy dữ liệu** | **QUAN TRỌNG:** Điền vùng cột cần lấy (VD: `A:D`, `A:Z`). Nếu để trống, tool mặc định **Lấy hết**. |
+    | **Tháng** | Nhập tháng dữ liệu (VD: `10/2023`) để phân loại. |
+    | **Link Nguồn** | Link file Google Sheet chứa dữ liệu gốc. |
+    | **Link Đích** | Link file Google Sheet nơi dữ liệu sẽ đổ về. |
+    | **Tên sheet nguồn** | Tên tab (sheet) trong file gốc cần lấy (VD: `Sheet1`, `Data`). |
+    | **Tên sheet đích** | Tên tab trong file đích sẽ lưu dữ liệu. |
+
+    ### 4. Các Chức Năng Chính
+    * **▶️ CHẠY KHỐI...**: Chỉ chạy các dòng "Chưa chốt" trong khối đang chọn.
+    * **🚀 CHẠY TẤT CẢ**: Chạy lần lượt toàn bộ các khối có trong hệ thống.
+    * **🔍 Quét Quyền**: Kiểm tra xem Bot đã có quyền truy cập vào Link Nguồn/Đích chưa.
+    * **💾 Lưu**: Lưu lại các thay đổi cấu hình lên Server.
+
+    ### 5. Xử Lý Lỗi Quyền (Permission)
+    Nếu nút **Quét Quyền** báo đỏ, bạn cần chia sẻ quyền cho Bot:
+    1.  Copy email Bot: `%s`
+    2.  Vào file **Nguồn**: Share quyền **Viewer (Người xem)**.
+    3.  Vào file **Đích**: Share quyền **Editor (Người chỉnh sửa)**.
+
+    ### 6. Hẹn Giờ Tự Động
+    * Chọn tần suất (Hàng ngày/tuần/tháng) và Giờ chạy.
+    * Bấm **Lưu Hẹn Giờ**. Hệ thống Github Action sẽ tự động chạy theo lịch này.
+    """ % BOT_EMAIL_DISPLAY)
+
 def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
-
     if "auto_key" in st.query_params:
         key = st.query_params["auto_key"]
         if key in AUTHORIZED_USERS:
-            st.session_state['logged_in'] = True
-            st.session_state['current_user_id'] = AUTHORIZED_USERS[key]
-            return True
-
+            st.session_state['logged_in'] = True; st.session_state['current_user_id'] = AUTHORIZED_USERS[key]; return True
     if st.session_state['logged_in']: return True
-
     st.header("🔒 Đăng nhập hệ thống")
     pwd = st.text_input("Nhập mật khẩu truy cập:", type="password")
     if st.button("Đăng Nhập"):
         if pwd in AUTHORIZED_USERS:
-            st.session_state['logged_in'] = True
-            st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]
-            st.toast(f"Xin chào {AUTHORIZED_USERS[pwd]}!", icon="👋")
-            time.sleep(0.5)
-            st.rerun()
+            st.session_state['logged_in'] = True; st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]; st.rerun()
         else: st.error("Mật khẩu không đúng!")
     return False
 
@@ -83,16 +115,14 @@ def get_creds():
         try: creds_info = json.loads(raw_creds)
         except: return None
     else: creds_info = dict(raw_creds)
-    if "private_key" in creds_info: 
-        creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+    if "private_key" in creds_info: creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def get_sh_with_retry(creds, sheet_id_or_key):
     gc = gspread.authorize(creds)
     max_retries = 3
     for i in range(max_retries):
-        try:
-            return gc.open_by_key(sheet_id_or_key)
+        try: return gc.open_by_key(sheet_id_or_key)
         except Exception as e:
             if i == max_retries - 1: raise e
             time.sleep((2 ** i) + random.random()) 
@@ -413,7 +443,7 @@ def process_pipeline(rows_to_run, user_id, block_name_run):
     finally:
         set_system_lock(creds, user_id, lock=False)
 
-# --- 6. QUẢN LÝ BLOCK & QUÉT QUYỀN ---
+# --- 6. QUẢN LÝ BLOCK ---
 def man_scan(df):
     """Hàm quét quyền"""
     creds = get_creds()
@@ -479,7 +509,7 @@ def save_block_config(df_current_ui, current_block_name, creds):
     if 'STT' in df_to_save.columns: df_to_save = df_to_save.drop(columns=['STT'])
     df_to_save[COL_BLOCK_NAME] = current_block_name 
     
-    # DANH SÁCH CỘT CẦN LƯU (10 Cột)
+    # DANH SÁCH 10 CỘT CẦN LƯU (ĐÚNG THỨ TỰ)
     target_cols = [
         COL_BLOCK_NAME, 
         'Trạng thái', 
@@ -564,6 +594,11 @@ def main_ui():
                 save_block_config(df_remain, "TEMP_DELETE", creds)
                 st.session_state['df_full_config'] = df_remain
                 st.rerun()
+        
+        # Nút Hướng dẫn sử dụng
+        st.divider()
+        if st.button("📘 Tài liệu Hướng Dẫn"):
+            show_guide_popup()
 
     st.subheader(f"Danh sách Job của khối: {selected_block}")
     
@@ -676,6 +711,25 @@ def main_ui():
             save_block_config(edited_df, selected_block, creds)
             del st.session_state['df_full_config']
             st.rerun()
+
+# --- HÀM POPUP HƯỚNG DẪN (ĐẶT Ở CUỐI ĐỂ TRÁNH LỖI) ---
+@st.dialog("📘 TÀI LIỆU HƯỚNG DẪN", width="large")
+def show_guide_popup():
+    st.markdown("""
+    ### 1. Tổng Quan
+    Tool tự động lấy dữ liệu từ Google Sheets nguồn và đổ về đích.
+    
+    ### 2. Cấu Hình
+    | Cột | Ý nghĩa |
+    |---|---|
+    | **Vùng lấy dữ liệu** | VD: `A:D`. Để trống = Lấy hết. |
+    | **Link Nguồn/Đích** | Copy link file Google Sheet. |
+    | **Sheet Nguồn/Đích** | Tên tab cụ thể (VD: `Sheet1`). |
+
+    ### 3. Lưu ý quan trọng
+    * **Cấp quyền:** Bot phải có quyền **Xem (Link nguồn)** và **Sửa (Link đích)**.
+    * **Dữ liệu:** Tool giữ nguyên định dạng gốc (text, số 0 đầu...).
+    """)
 
 if __name__ == "__main__":
     main_ui()
