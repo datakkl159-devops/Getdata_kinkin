@@ -19,7 +19,7 @@ from collections import defaultdict
 st.set_page_config(page_title="Tool Quản Lý Data Multi-Block", layout="wide")
 
 AUTHORIZED_USERS = {
-    "admin2024": "Admin_Master",
+    "admin2025": "Admin_Master",
     "team_hn": "Team_HaNoi",
     "team_hcm": "Team_HCM"
 }
@@ -772,3 +772,4 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
