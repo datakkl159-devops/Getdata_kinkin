@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V85 - Smart Filter)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V87 - Debugger)", layout="wide", page_icon="🐞")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -25,7 +25,7 @@ AUTHORIZED_USERS = {
     "team_hcm": "Team_HCM"
 }
 
-BOT_EMAIL_DISPLAY = "botnew@kinkin2.iam.gserviceaccount.com"
+BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 
 # Tên Sheet
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
@@ -87,7 +87,6 @@ def get_creds():
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def safe_api_call(func, *args, **kwargs):
-    """Bọc API Call để chống lỗi 429 Quota Exceeded"""
     max_retries = 5
     for i in range(max_retries):
         try:
@@ -96,13 +95,12 @@ def safe_api_call(func, *args, **kwargs):
             error_str = str(e).lower()
             if "429" in error_str or "quota" in error_str or "api" in error_str or "500" in error_str:
                 wait_time = (2 ** i) + 3 
-                print(f"⚠️ API Busy/Quota. Waiting {wait_time}s...")
+                print(f"⚠️ API Busy. Waiting {wait_time}s...")
                 time.sleep(wait_time)
             elif i == max_retries - 1: raise e
             else: time.sleep(2)
     return None
 
-# [V83/V84] Wrapper an toàn cho DataFrame
 def safe_get_as_dataframe(wks, **kwargs):
     return safe_api_call(get_as_dataframe, wks, **kwargs)
 
@@ -132,71 +130,119 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- [V85] FILTER ENGINE (SUPER CLEANER) ---
-def apply_smart_filter_v85(df, filter_str):
+# --- [V87] SMART FILTER ENGINE (DEBUG MODE) ---
+def apply_smart_filter_v87(df, filter_str, debug_container=None):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
         return df, None
+    
+    # Tách các điều kiện
     conditions = str(filter_str).split(';')
     current_df = df.copy()
     
-    for cond in conditions:
+    if debug_container:
+        debug_container.markdown(f"**🔍 Bắt đầu lọc: {len(current_df)} dòng ban đầu**")
+
+    for i, cond in enumerate(conditions):
         fs = cond.strip()
         if not fs: continue 
         
+        # Xác định toán tử
         operators = [" contains ", "==", "!=", ">=", "<=", ">", "<", "="]
         selected_op = None
         for op in operators:
             if op in fs: selected_op = op; break
-        if not selected_op: return None, f"Lỗi cú pháp: Không tìm thấy toán tử trong '{fs}'"
-        
+                
+        if not selected_op: 
+            return None, f"Lỗi cú pháp (không thấy toán tử): '{fs}'"
+
+        # Tách Cột và Giá trị
         parts = fs.split(selected_op, 1)
         user_col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
         
+        # Tìm tên cột thực tế trong DataFrame
         real_col_name = None
-        if user_col in current_df.columns: real_col_name = user_col
+        if user_col in current_df.columns: 
+            real_col_name = user_col
         else:
+            # Thử tìm gần đúng (bỏ case, bỏ space)
             for col in current_df.columns:
-                if str(col).strip() == user_col: real_col_name = col; break
-        if not real_col_name: return None, f"Không tìm thấy cột '{user_col}'"
+                if str(col).strip().lower() == user_col.lower(): 
+                    real_col_name = col; break
+        
+        if not real_col_name: 
+            return None, f"Không tìm thấy cột '{user_col}'"
 
+        # Xử lý giá trị (Bỏ dấu nháy nếu có)
         user_val = parts[1].strip()
+        clean_val = user_val
         if (user_val.startswith("'") and user_val.endswith("'")) or (user_val.startswith('"') and user_val.endswith('"')):
             clean_val = user_val[1:-1]
-        else: clean_val = user_val
 
+        # --- BẮT ĐẦU SO SÁNH ---
         try:
             col_series = current_df[real_col_name]
-            # [V85] Cắt khoảng trắng thừa ở dữ liệu GỐC để so sánh chuẩn hơn
-            col_str = col_series.astype(str).str.strip()
-
+            
+            # 1. Nếu là contains (So sánh chuỗi tương đối)
             if selected_op == " contains ":
-                current_df = current_df[col_str.str.contains(clean_val, case=False, na=False)]
-            elif selected_op in ["=", "=="]:
-                current_df = current_df[col_str == str(clean_val)]
-            elif selected_op == "!=":
-                current_df = current_df[col_str != str(clean_val)]
+                current_df = current_df[col_series.astype(str).str.contains(clean_val, case=False, na=False)]
+            
+            # 2. Các phép so sánh bằng/lớn/nhỏ
             else:
-                # So sánh Lớn/Bé
-                is_numeric = False
+                # [V87] Cố gắng chuyển đổi kiểu dữ liệu thông minh
+                # Ưu tiên 1: Chuyển sang Datetime
+                is_date = False
                 try:
-                    numeric_col = pd.to_numeric(col_series, errors='raise')
-                    float(clean_val); is_numeric = True
-                except: is_numeric = False
-                
-                if is_numeric:
-                    numeric_val = float(clean_val)
-                    if selected_op == ">": current_df = current_df[numeric_col > numeric_val]
-                    if selected_op == "<": current_df = current_df[numeric_col < numeric_val]
-                    if selected_op == ">=": current_df = current_df[numeric_col >= numeric_val]
-                    if selected_op == "<=": current_df = current_df[numeric_col <= numeric_val]
-                else:
-                    # So sánh chuỗi (Date)
-                    clean_str_val = str(clean_val)
-                    if selected_op == ">": current_df = current_df[col_str > clean_str_val]
-                    if selected_op == "<": current_df = current_df[col_str < clean_str_val]
-                    if selected_op == ">=": current_df = current_df[col_str >= clean_str_val]
-                    if selected_op == "<=": current_df = current_df[col_str <= clean_str_val]
-        except Exception as e: return None, f"Lỗi xử lý điều kiện '{fs}': {str(e)}"
+                    s_dt = pd.to_datetime(col_series, dayfirst=True, errors='coerce')
+                    v_dt = pd.to_datetime(clean_val, dayfirst=True)
+                    if s_dt.notna().any(): # Nếu cột có dữ liệu ngày hợp lệ
+                        is_date = True
+                except: is_date = False
+
+                # Ưu tiên 2: Chuyển sang Số
+                is_num = False
+                if not is_date:
+                    try:
+                        s_num = pd.to_numeric(col_series, errors='coerce')
+                        v_num = float(clean_val)
+                        if s_num.notna().any():
+                            is_num = True
+                    except: is_num = False
+
+                # Thực hiện lọc dựa trên kiểu đã xác định
+                if is_date: # Lọc theo Ngày
+                    if selected_op == ">": current_df = current_df[s_dt > v_dt]
+                    elif selected_op == "<": current_df = current_df[s_dt < v_dt]
+                    elif selected_op == ">=": current_df = current_df[s_dt >= v_dt]
+                    elif selected_op == "<=": current_df = current_df[s_dt <= v_dt]
+                    elif selected_op in ["=", "=="]: current_df = current_df[s_dt == v_dt]
+                    elif selected_op == "!=": current_df = current_df[s_dt != v_dt]
+                    type_msg = "Ngày tháng"
+
+                elif is_num: # Lọc theo Số
+                    if selected_op == ">": current_df = current_df[s_num > v_num]
+                    elif selected_op == "<": current_df = current_df[s_num < v_num]
+                    elif selected_op == ">=": current_df = current_df[s_num >= v_num]
+                    elif selected_op == "<=": current_df = current_df[s_num <= v_num]
+                    elif selected_op in ["=", "=="]: current_df = current_df[s_num == v_num]
+                    elif selected_op == "!=": current_df = current_df[s_num != v_num]
+                    type_msg = "Số học"
+
+                else: # Lọc theo Chuỗi (String) - Fallback
+                    s_str = col_series.astype(str).str.strip() # Trim space
+                    if selected_op == ">": current_df = current_df[s_str > str(clean_val)]
+                    elif selected_op == "<": current_df = current_df[s_str < str(clean_val)]
+                    elif selected_op == ">=": current_df = current_df[s_str >= str(clean_val)]
+                    elif selected_op == "<=": current_df = current_df[s_str <= str(clean_val)]
+                    elif selected_op in ["=", "=="]: current_df = current_df[s_str == str(clean_val)]
+                    elif selected_op == "!=": current_df = current_df[s_str != str(clean_val)]
+                    type_msg = "Chuỗi văn bản"
+
+            if debug_container:
+                debug_container.caption(f"👉 Lọc {i+1}: `{real_col_name}` {selected_op} `{clean_val}` ({type_msg}) -> Còn {len(current_df)} dòng")
+
+        except Exception as e:
+            return None, f"Lỗi xử lý điều kiện '{fs}': {str(e)}"
+
     return current_df, None
 
 # --- LOGGING SYSTEM ---
@@ -265,7 +311,7 @@ def check_login():
     return False
 
 # ==========================================
-# 3. SYSTEM MANAGERS (SAFE WRAPPERS)
+# 3. SYSTEM MANAGERS
 # ==========================================
 def get_system_lock_status(creds):
     try:
@@ -391,12 +437,12 @@ def write_detailed_log(creds, log_data_list):
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V85): {str(e)}")
+        st.warning(f"Lỗi ghi log (V87): {str(e)}")
 
 # ==========================================
 # 4. CORE ETL
 # ==========================================
-def fetch_data_v4(row_config, creds, target_headers=None):
+def fetch_data_v4(row_config, creds, target_headers=None, status_container=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
     month_val = str(row_config.get(COL_MONTH, ''))
@@ -452,8 +498,8 @@ def fetch_data_v4(row_config, creds, target_headers=None):
             except: pass
 
         if raw_filter:
-            # [V85] Sử dụng hàm Filter V85 (Smart Trim)
-            df_filtered, err = apply_smart_filter_v85(df_working, raw_filter)
+            # [V87] Truyền status_container vào để hiện log debug
+            df_filtered, err = apply_smart_filter_v87(df_working, raw_filter, debug_container=status_container)
             if err: return None, sheet_id, f"⚠️ {err}"
             df_working = df_filtered
 
@@ -563,6 +609,7 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
                 log_container.write("✅ Đã xóa xong. Đang cập nhật index...")
                 time.sleep(3) 
         
+        # [V87] Lấy dòng cuối CHÍNH XÁC (Sau khi xóa)
         current_data = safe_api_call(wks.get_all_values)
         if current_data is None: start_row = 1 
         else: start_row = len(current_data) + 1
@@ -575,6 +622,7 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             safe_api_call(wks.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
             time.sleep(1)
 
+        # [V87] Tính toán Log Row chuẩn
         current_cursor = start_row
         for df, src_link, r_idx, w_mode in tasks_list:
             count = len(df)
@@ -655,16 +703,23 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                     w_mode = str(r.get(COL_WRITE_MODE, 'Ghi Đè')).strip()
                     if w_mode not in ["Ghi Đè", "Ghi Nối Tiếp"]: w_mode = "Ghi Đè"
 
-                    st.write(f"⬇️ Tải: {lnk[-10:]} ({lbl}) [{w_mode}]")
-                    df, sid, msg = fetch_data_v4(r, creds, target_headers)
-                    time.sleep(1.5)
+                    # Visual Status
+                    msg_placeholder = st.empty()
+                    msg_placeholder.write(f"⏳ Đang tải: {lnk[-10:]} ({lbl})...")
+                    
+                    # [V87] Pass msg_placeholder for Debug Filter
+                    df, sid, msg = fetch_data_v4(r, creds, target_headers, status_container=msg_placeholder)
+                    time.sleep(1.0)
                     
                     if df is not None: 
+                        count = len(df)
+                        msg_placeholder.success(f"✅ Tải xong: {lnk[-10:]} ({lbl}) | SL: {count} dòng")
                         tasks.append((df, lnk, row_idx, w_mode))
                         total_rows += len(df)
                     else: 
-                        st.error(f"❌ {msg}")
+                        msg_placeholder.error(f"❌ Lỗi tải: {lnk[-10:]} | {msg}")
                         final_res_map[row_idx] = ("Lỗi tải", "", 0)
+                    
                     del df; gc.collect()
 
                 if tasks:
@@ -699,7 +754,7 @@ def load_full_config(_creds):
     sh = get_sh_with_retry(_creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     ensure_sheet_headers(wks, REQUIRED_COLS_CONFIG)
-    # [V85] Safe
+    # [V87] Safe
     df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
     
     if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
@@ -720,7 +775,6 @@ def save_block_config_to_sheet(df_ui, blk_name, creds, uid):
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         
-        # [V85] Safe
         df_svr = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         if df_svr.empty: df_svr = pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
         else: df_svr = df_svr.dropna(how='all')
@@ -750,7 +804,6 @@ def save_block_config_to_sheet(df_ui, blk_name, creds, uid):
         
         df_fin = pd.concat([df_oth, df_new_blk], ignore_index=True).astype(str).replace(['nan', 'None'], '')
         wks.clear(); 
-        # [V85] Safe
         safe_set_with_dataframe(wks, df_fin, row=1, col=1)
         st.toast("Saved!", icon="💾")
     finally: release_lock(creds, uid)
@@ -759,7 +812,6 @@ def rename_block_action(old, new, creds, uid):
     if not acquire_lock(creds, uid): return False
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # [V85] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df.loc[df[COL_BLOCK_NAME] == old, COL_BLOCK_NAME] = new
         wks.clear(); 
@@ -772,7 +824,6 @@ def delete_block_direct(blk, creds, uid):
     if not acquire_lock(creds, uid): return
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # [V85] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
         df_new = df[df[COL_BLOCK_NAME] != blk]
         wks.clear(); 
@@ -794,7 +845,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V85 - Smart Filter)", help="V85: Auto Trim"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V87 - Debugger)", help="V87: Debug Filter"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -893,7 +944,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v85"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v87"
     )
 
     if edt_df[COL_COPY_FLAG].any():
