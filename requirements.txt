@@ -11,3 +11,6 @@ gspread-dataframe
 pytz
 oauth2client
 openpyxl
+gspread-formatting
+st-copy-to-clipboard
+streamlit-autorefresh
