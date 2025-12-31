@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V84 - Final Complete)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V85 - Smart Filter)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -132,44 +132,57 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- SMART FILTER ENGINE (V82/V84) ---
-def apply_smart_filter_v82(df, filter_str):
+# --- [V85] FILTER ENGINE (SUPER CLEANER) ---
+def apply_smart_filter_v85(df, filter_str):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
         return df, None
     conditions = str(filter_str).split(';')
     current_df = df.copy()
+    
     for cond in conditions:
         fs = cond.strip()
         if not fs: continue 
+        
         operators = [" contains ", "==", "!=", ">=", "<=", ">", "<", "="]
         selected_op = None
         for op in operators:
             if op in fs: selected_op = op; break
         if not selected_op: return None, f"Lỗi cú pháp: Không tìm thấy toán tử trong '{fs}'"
+        
         parts = fs.split(selected_op, 1)
         user_col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
+        
         real_col_name = None
         if user_col in current_df.columns: real_col_name = user_col
         else:
             for col in current_df.columns:
                 if str(col).strip() == user_col: real_col_name = col; break
         if not real_col_name: return None, f"Không tìm thấy cột '{user_col}'"
+
         user_val = parts[1].strip()
         if (user_val.startswith("'") and user_val.endswith("'")) or (user_val.startswith('"') and user_val.endswith('"')):
             clean_val = user_val[1:-1]
         else: clean_val = user_val
+
         try:
             col_series = current_df[real_col_name]
-            col_str = col_series.astype(str)
-            if selected_op == " contains ": current_df = current_df[col_str.str.contains(clean_val, case=False, na=False)]
-            elif selected_op in ["=", "=="]: current_df = current_df[col_str == str(clean_val)]
-            elif selected_op == "!=": current_df = current_df[col_str != str(clean_val)]
+            # [V85] Cắt khoảng trắng thừa ở dữ liệu GỐC để so sánh chuẩn hơn
+            col_str = col_series.astype(str).str.strip()
+
+            if selected_op == " contains ":
+                current_df = current_df[col_str.str.contains(clean_val, case=False, na=False)]
+            elif selected_op in ["=", "=="]:
+                current_df = current_df[col_str == str(clean_val)]
+            elif selected_op == "!=":
+                current_df = current_df[col_str != str(clean_val)]
             else:
+                # So sánh Lớn/Bé
                 is_numeric = False
                 try:
                     numeric_col = pd.to_numeric(col_series, errors='raise')
                     float(clean_val); is_numeric = True
                 except: is_numeric = False
+                
                 if is_numeric:
                     numeric_val = float(clean_val)
                     if selected_op == ">": current_df = current_df[numeric_col > numeric_val]
@@ -177,6 +190,7 @@ def apply_smart_filter_v82(df, filter_str):
                     if selected_op == ">=": current_df = current_df[numeric_col >= numeric_val]
                     if selected_op == "<=": current_df = current_df[numeric_col <= numeric_val]
                 else:
+                    # So sánh chuỗi (Date)
                     clean_str_val = str(clean_val)
                     if selected_op == ">": current_df = current_df[col_str > clean_str_val]
                     if selected_op == "<": current_df = current_df[col_str < clean_str_val]
@@ -377,7 +391,7 @@ def write_detailed_log(creds, log_data_list):
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V84): {str(e)}")
+        st.warning(f"Lỗi ghi log (V85): {str(e)}")
 
 # ==========================================
 # 4. CORE ETL
@@ -438,8 +452,8 @@ def fetch_data_v4(row_config, creds, target_headers=None):
             except: pass
 
         if raw_filter:
-            # [V84] Sử dụng hàm Filter V82
-            df_filtered, err = apply_smart_filter_v82(df_working, raw_filter)
+            # [V85] Sử dụng hàm Filter V85 (Smart Trim)
+            df_filtered, err = apply_smart_filter_v85(df_working, raw_filter)
             if err: return None, sheet_id, f"⚠️ {err}"
             df_working = df_filtered
 
@@ -549,7 +563,6 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
                 log_container.write("✅ Đã xóa xong. Đang cập nhật index...")
                 time.sleep(3) 
         
-        # [V84] Lấy Dòng Cuối Mới (Sau khi xóa)
         current_data = safe_api_call(wks.get_all_values)
         if current_data is None: start_row = 1 
         else: start_row = len(current_data) + 1
@@ -578,7 +591,7 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
 
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}", {}
 
-# --- PIPELINE MAIN FUNCTION (KHÔI PHỤC) ---
+# --- PIPELINE MAIN FUNCTION ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi"
@@ -686,7 +699,7 @@ def load_full_config(_creds):
     sh = get_sh_with_retry(_creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     ensure_sheet_headers(wks, REQUIRED_COLS_CONFIG)
-    # [V84] Safe
+    # [V85] Safe
     df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
     
     if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
@@ -707,7 +720,7 @@ def save_block_config_to_sheet(df_ui, blk_name, creds, uid):
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         
-        # [V84] Safe
+        # [V85] Safe
         df_svr = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         if df_svr.empty: df_svr = pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
         else: df_svr = df_svr.dropna(how='all')
@@ -737,7 +750,7 @@ def save_block_config_to_sheet(df_ui, blk_name, creds, uid):
         
         df_fin = pd.concat([df_oth, df_new_blk], ignore_index=True).astype(str).replace(['nan', 'None'], '')
         wks.clear(); 
-        # [V84] Safe
+        # [V85] Safe
         safe_set_with_dataframe(wks, df_fin, row=1, col=1)
         st.toast("Saved!", icon="💾")
     finally: release_lock(creds, uid)
@@ -746,7 +759,7 @@ def rename_block_action(old, new, creds, uid):
     if not acquire_lock(creds, uid): return False
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # [V84] Safe
+        # [V85] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df.loc[df[COL_BLOCK_NAME] == old, COL_BLOCK_NAME] = new
         wks.clear(); 
@@ -759,7 +772,7 @@ def delete_block_direct(blk, creds, uid):
     if not acquire_lock(creds, uid): return
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # [V84] Safe
+        # [V85] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
         df_new = df[df[COL_BLOCK_NAME] != blk]
         wks.clear(); 
@@ -781,7 +794,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V84 - Final Complete)", help="V84: Robust & Fixed"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V85 - Smart Filter)", help="V85: Auto Trim"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -880,7 +893,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v84"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v85"
     )
 
     if edt_df[COL_COPY_FLAG].any():
@@ -957,4 +970,3 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
-
