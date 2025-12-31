@@ -623,22 +623,31 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             time.sleep(1)
 
         # [V87] Tính toán Log Row chuẩn
-        current_cursor = start_row
+        # ... (Đoạn code ghi dữ liệu vào Sheet nằm ở trên) ...
+
+        # [ĐÂY LÀ PHẦN TÍNH LOG ROW]
+        # current_cursor: Con trỏ bắt đầu (Được lấy từ start_row - dòng cuối sau khi xóa/hoặc dòng cuối hiện tại)
+        current_cursor = start_row 
+        
         for df, src_link, r_idx, w_mode in tasks_list:
-            count = len(df)
+            count = len(df) # Đếm số dòng của file nguồn này
+            
             if count > 0:
+                # Tính dòng kết thúc = Dòng đầu + Số dòng - 1
                 end = current_cursor + count - 1
+                
+                # Tạo chuỗi Log hiển thị (Ví dụ: "101 - 150")
                 rng_str = f"{current_cursor} - {end}"
+                
+                # Cập nhật con trỏ cho file tiếp theo (nếu gộp nhiều file)
                 current_cursor += count
             else:
                 rng_str = "0 dòng"
             
+            # Lưu kết quả vào map để trả về giao diện
             result_map[r_idx] = ("Thành công", rng_str, count)
             
         return True, f"Cập nhật {len(df_aligned)} dòng", result_map
-
-    except Exception as e: return False, f"Lỗi Ghi: {str(e)}", {}
-
 # --- PIPELINE MAIN FUNCTION ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
@@ -1021,3 +1030,4 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
