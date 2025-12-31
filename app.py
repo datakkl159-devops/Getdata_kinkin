@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V83 - Anti Crash)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Kinkin Manager (V84 - Final Complete)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -94,18 +94,15 @@ def safe_api_call(func, *args, **kwargs):
             return func(*args, **kwargs)
         except Exception as e:
             error_str = str(e).lower()
-            # Bắt cả lỗi APIError của gspread
             if "429" in error_str or "quota" in error_str or "api" in error_str or "500" in error_str:
                 wait_time = (2 ** i) + 3 
                 print(f"⚠️ API Busy/Quota. Waiting {wait_time}s...")
                 time.sleep(wait_time)
-            elif i == max_retries - 1: 
-                raise e # Ném lỗi nếu hết số lần thử
-            else: 
-                time.sleep(2)
+            elif i == max_retries - 1: raise e
+            else: time.sleep(2)
     return None
 
-# [V83] Wrapper an toàn cho các hàm DataFrame
+# [V83/V84] Wrapper an toàn cho DataFrame
 def safe_get_as_dataframe(wks, **kwargs):
     return safe_api_call(get_as_dataframe, wks, **kwargs)
 
@@ -135,7 +132,7 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- SMART FILTER ENGINE (V82) ---
+# --- SMART FILTER ENGINE (V82/V84) ---
 def apply_smart_filter_v82(df, filter_str):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
         return df, None
@@ -295,7 +292,6 @@ def load_notes_data(creds):
         try: wks = sh.worksheet(SHEET_NOTE_NAME)
         except: wks = sh.add_worksheet(SHEET_NOTE_NAME, rows=100, cols=5); ensure_sheet_headers(wks, REQUIRED_COLS_NOTE)
         ensure_sheet_headers(wks, REQUIRED_COLS_NOTE)
-        # [V83] Dùng hàm an toàn
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_NOTE)
         return df.dropna(how='all')
@@ -308,7 +304,6 @@ def save_notes_data(df_notes, creds, user_id, block_name):
         if not df_notes.empty:
             for idx, row in df_notes.iterrows():
                 if not row[NOTE_COL_ID]: df_notes.at[idx, NOTE_COL_ID] = str(uuid.uuid4())[:8]
-        # [V83] Dùng hàm an toàn
         safe_set_with_dataframe(wks, df_notes, row=1, col=1)
         log_user_action_buffered(creds, user_id, "Lưu Ghi Chú", f"Cập nhật note cho {block_name}", force_flush=True)
         return True
@@ -339,7 +334,6 @@ def load_scheduler_config(creds):
             wks = sh.add_worksheet(SHEET_SYS_CONFIG, rows=50, cols=5)
             wks.append_row(REQUIRED_COLS_SCHED)
         ensure_sheet_headers(wks, REQUIRED_COLS_SCHED)
-        # [V83] Dùng hàm an toàn
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         if SCHED_COL_BLOCK not in df.columns: return pd.DataFrame(columns=REQUIRED_COLS_SCHED)
         return df.dropna(how='all')
@@ -353,7 +347,6 @@ def save_scheduler_config(df_sched, creds, user_id, type_run, v1, v2):
         for c in cols:
             if c not in df_sched.columns: df_sched[c] = ""
         wks.clear(); 
-        # [V83] Dùng hàm an toàn
         safe_set_with_dataframe(wks, df_sched[cols].fillna(""), row=1, col=1)
         msg = f"Cài đặt: {type_run} | {v1} {v2}".strip()
         log_user_action_buffered(creds, user_id, "Cài Lịch Chạy", msg, force_flush=True)
@@ -364,7 +357,6 @@ def fetch_activity_logs(creds, limit=50):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         wks = sh.worksheet(SHEET_ACTIVITY_NAME)
-        # [V83] Dùng hàm an toàn
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         if df.empty: return pd.DataFrame()
         return df.tail(limit).iloc[::-1]
@@ -385,7 +377,7 @@ def write_detailed_log(creds, log_data_list):
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V83): {str(e)}")
+        st.warning(f"Lỗi ghi log (V84): {str(e)}")
 
 # ==========================================
 # 4. CORE ETL
@@ -446,7 +438,7 @@ def fetch_data_v4(row_config, creds, target_headers=None):
             except: pass
 
         if raw_filter:
-            # [V82] Sử dụng hàm Filter V82
+            # [V84] Sử dụng hàm Filter V82
             df_filtered, err = apply_smart_filter_v82(df_working, raw_filter)
             if err: return None, sheet_id, f"⚠️ {err}"
             df_working = df_filtered
@@ -502,7 +494,6 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
         time.sleep(1)
 
 def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_container):
-    # [V82] LOGIC REFACTOR & FIX
     result_map = {} 
     try:
         target_id = extract_id(target_link)
@@ -558,7 +549,7 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
                 log_container.write("✅ Đã xóa xong. Đang cập nhật index...")
                 time.sleep(3) 
         
-        # Lấy Dòng Cuối Mới (Sau khi xóa)
+        # [V84] Lấy Dòng Cuối Mới (Sau khi xóa)
         current_data = safe_api_call(wks.get_all_values)
         if current_data is None: start_row = 1 
         else: start_row = len(current_data) + 1
@@ -587,6 +578,106 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
 
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}", {}
 
+# --- PIPELINE MAIN FUNCTION (KHÔI PHỤC) ---
+def verify_access_fast(url, creds):
+    sheet_id = extract_id(url)
+    if not sheet_id: return False, "Link lỗi"
+    try: get_sh_with_retry(creds, sheet_id); return True, "OK"
+    except: return False, "Chặn quyền"
+
+def check_permissions_ui(rows, creds, container, user_id):
+    log_user_action_buffered(creds, user_id, "Quét Quyền", "Bắt đầu...", force_flush=False)
+    src_links = set(); tgt_links = set()
+    for r in rows:
+        s_link = str(r.get(COL_SRC_LINK, '')).strip(); t_link = str(r.get(COL_TGT_LINK, '')).strip()
+        if "docs.google.com" in s_link: src_links.add(s_link)
+        if "docs.google.com" in t_link: tgt_links.add(t_link)
+    all_unique_links = list(src_links.union(tgt_links)); total = len(all_unique_links)
+    if total == 0: container.info("Không tìm thấy link Google Sheet nào."); return
+    prog = container.progress(0); err_count = 0
+    for i, link in enumerate(all_unique_links):
+        prog.progress((i + 1) / total); time.sleep(0.2)
+        ok, msg = verify_access_fast(link, creds)
+        if not ok:
+            err_count += 1; error_msgs = []
+            if link in src_links: error_msgs.append("Link Nguồn: cần quyền XEM")
+            if link in tgt_links: error_msgs.append("Link Đích: cần quyền SỬA")
+            container.error(f"❌ {link}\n👉 {' & '.join(error_msgs)}")
+    if err_count == 0: container.success("✅ OK: Bot có đủ quyền.")
+    else: container.warning(f"⚠️ {err_count} link thiếu quyền.")
+    log_user_action_buffered(creds, user_id, "Quét Quyền", f"Lỗi: {err_count}", force_flush=True)
+
+def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_container):
+    creds = get_creds()
+    if not acquire_lock(creds, user_id): 
+        st.error("⚠️ Hệ thống đang bận. Vui lòng thử lại sau."); return False, {}, 0
+    
+    log_user_action_buffered(creds, user_id, f"Chạy: {block_name_run}", "Đang xử lý...", force_flush=True)
+    try:
+        grouped = defaultdict(list)
+        for r in rows_to_run:
+            if str(r.get(COL_STATUS, '')).strip() == "Chưa chốt & đang cập nhật":
+                grouped[(str(r.get(COL_TGT_LINK, '')).strip(), str(r.get(COL_TGT_SHEET, '')).strip())].append(r)
+        
+        final_res_map = {}; all_ok = True; total_rows = 0; log_ents = []
+        tz = pytz.timezone('Asia/Ho_Chi_Minh'); now = datetime.now(tz).strftime("%d/%m/%Y %H:%M:%S")
+
+        for idx, ((t_link, t_sheet), group_rows) in enumerate(grouped.items()):
+            with status_container.expander(f"Processing File {idx+1}: ...{t_link[-10:]}", expanded=True):
+                target_headers = []
+                try:
+                    tid = extract_id(t_link)
+                    if tid:
+                        sh_t = get_sh_with_retry(creds, tid)
+                        all_titles = [s.title for s in safe_api_call(sh_t.worksheets)]
+                        if t_sheet in all_titles:
+                            wks_t = sh_t.worksheet(t_sheet)
+                            target_headers = safe_api_call(wks_t.row_values, 1)
+                except: pass
+
+                tasks = []
+                for i, r in enumerate(group_rows):
+                    lnk = r.get(COL_SRC_LINK, ''); lbl = r.get(COL_SRC_SHEET, '')
+                    row_idx = r.get('_index', -1)
+                    w_mode = str(r.get(COL_WRITE_MODE, 'Ghi Đè')).strip()
+                    if w_mode not in ["Ghi Đè", "Ghi Nối Tiếp"]: w_mode = "Ghi Đè"
+
+                    st.write(f"⬇️ Tải: {lnk[-10:]} ({lbl}) [{w_mode}]")
+                    df, sid, msg = fetch_data_v4(r, creds, target_headers)
+                    time.sleep(1.5)
+                    
+                    if df is not None: 
+                        tasks.append((df, lnk, row_idx, w_mode))
+                        total_rows += len(df)
+                    else: 
+                        st.error(f"❌ {msg}")
+                        final_res_map[row_idx] = ("Lỗi tải", "", 0)
+                    del df; gc.collect()
+
+                if tasks:
+                    ok, msg, batch_res_map = write_strict_sync_v2(tasks, t_link, t_sheet, creds, st)
+                    if not ok: st.error(msg); all_ok = False
+                    else: st.success(msg)
+                    final_res_map.update(batch_res_map)
+                    del tasks; gc.collect()
+                
+                for r in group_rows:
+                    row_idx = r.get('_index', -1)
+                    res_status, res_range, res_count = final_res_map.get(row_idx, ("Lỗi", "", 0))
+                    
+                    log_ents.append([
+                        now, r.get(COL_DATA_RANGE), r.get(COL_MONTH), user_id, 
+                        r.get(COL_SRC_LINK), t_link, t_sheet, r.get(COL_SRC_SHEET), 
+                        res_status, res_count, res_range, block_name_run
+                    ])
+        
+        write_detailed_log(creds, log_ents)
+        status_msg = f"Hoàn tất: Xử lý {total_rows} dòng. Lỗi: {not all_ok}"
+        log_user_action_buffered(creds, user_id, f"Kết quả chạy {block_name_run}", status_msg, force_flush=True)
+        
+        return all_ok, final_res_map, total_rows
+    finally: release_lock(creds, user_id)
+
 # ==========================================
 # 5. UI & MAIN
 # ==========================================
@@ -595,7 +686,7 @@ def load_full_config(_creds):
     sh = get_sh_with_retry(_creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     ensure_sheet_headers(wks, REQUIRED_COLS_CONFIG)
-    # [V83] Dùng hàm an toàn
+    # [V84] Safe
     df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
     
     if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
@@ -616,7 +707,7 @@ def save_block_config_to_sheet(df_ui, blk_name, creds, uid):
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         
-        # [V83] Dùng hàm an toàn
+        # [V84] Safe
         df_svr = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         if df_svr.empty: df_svr = pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
         else: df_svr = df_svr.dropna(how='all')
@@ -646,7 +737,7 @@ def save_block_config_to_sheet(df_ui, blk_name, creds, uid):
         
         df_fin = pd.concat([df_oth, df_new_blk], ignore_index=True).astype(str).replace(['nan', 'None'], '')
         wks.clear(); 
-        # [V83] Dùng hàm an toàn
+        # [V84] Safe
         safe_set_with_dataframe(wks, df_fin, row=1, col=1)
         st.toast("Saved!", icon="💾")
     finally: release_lock(creds, uid)
@@ -655,7 +746,7 @@ def rename_block_action(old, new, creds, uid):
     if not acquire_lock(creds, uid): return False
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # [V83] Safe
+        # [V84] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df.loc[df[COL_BLOCK_NAME] == old, COL_BLOCK_NAME] = new
         wks.clear(); 
@@ -668,7 +759,7 @@ def delete_block_direct(blk, creds, uid):
     if not acquire_lock(creds, uid): return
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # [V83] Safe
+        # [V84] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
         df_new = df[df[COL_BLOCK_NAME] != blk]
         wks.clear(); 
@@ -690,7 +781,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V83 - Anti Crash)", help="V83: Robust API"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V84 - Final Complete)", help="V84: Robust & Fixed"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -789,7 +880,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v83"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v84"
     )
 
     if edt_df[COL_COPY_FLAG].any():
