@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V87 - Debugger)", layout="wide", page_icon="🐞")
+st.set_page_config(page_title="Kinkin Manager (V88 - Syntax Fix)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -25,7 +25,7 @@ AUTHORIZED_USERS = {
     "team_hcm": "Team_HCM"
 }
 
-BOT_EMAIL_DISPLAY = "botnew@kinkin2.iam.gserviceaccount.com"
+BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 
 # Tên Sheet
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
@@ -87,6 +87,7 @@ def get_creds():
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def safe_api_call(func, *args, **kwargs):
+    """Bọc API Call để chống lỗi 429 Quota Exceeded"""
     max_retries = 5
     for i in range(max_retries):
         try:
@@ -130,12 +131,11 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- [V87] SMART FILTER ENGINE (DEBUG MODE) ---
+# --- SMART FILTER ENGINE (V87 DEBUG) ---
 def apply_smart_filter_v87(df, filter_str, debug_container=None):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
         return df, None
     
-    # Tách các điều kiện
     conditions = str(filter_str).split(';')
     current_df = df.copy()
     
@@ -146,25 +146,21 @@ def apply_smart_filter_v87(df, filter_str, debug_container=None):
         fs = cond.strip()
         if not fs: continue 
         
-        # Xác định toán tử
         operators = [" contains ", "==", "!=", ">=", "<=", ">", "<", "="]
         selected_op = None
         for op in operators:
             if op in fs: selected_op = op; break
                 
         if not selected_op: 
-            return None, f"Lỗi cú pháp (không thấy toán tử): '{fs}'"
+            return None, f"Lỗi cú pháp: '{fs}'"
 
-        # Tách Cột và Giá trị
         parts = fs.split(selected_op, 1)
         user_col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
         
-        # Tìm tên cột thực tế trong DataFrame
         real_col_name = None
         if user_col in current_df.columns: 
             real_col_name = user_col
         else:
-            # Thử tìm gần đúng (bỏ case, bỏ space)
             for col in current_df.columns:
                 if str(col).strip().lower() == user_col.lower(): 
                     real_col_name = col; break
@@ -172,44 +168,34 @@ def apply_smart_filter_v87(df, filter_str, debug_container=None):
         if not real_col_name: 
             return None, f"Không tìm thấy cột '{user_col}'"
 
-        # Xử lý giá trị (Bỏ dấu nháy nếu có)
         user_val = parts[1].strip()
         clean_val = user_val
         if (user_val.startswith("'") and user_val.endswith("'")) or (user_val.startswith('"') and user_val.endswith('"')):
             clean_val = user_val[1:-1]
 
-        # --- BẮT ĐẦU SO SÁNH ---
         try:
             col_series = current_df[real_col_name]
             
-            # 1. Nếu là contains (So sánh chuỗi tương đối)
             if selected_op == " contains ":
                 current_df = current_df[col_series.astype(str).str.contains(clean_val, case=False, na=False)]
             
-            # 2. Các phép so sánh bằng/lớn/nhỏ
             else:
-                # [V87] Cố gắng chuyển đổi kiểu dữ liệu thông minh
-                # Ưu tiên 1: Chuyển sang Datetime
                 is_date = False
                 try:
                     s_dt = pd.to_datetime(col_series, dayfirst=True, errors='coerce')
                     v_dt = pd.to_datetime(clean_val, dayfirst=True)
-                    if s_dt.notna().any(): # Nếu cột có dữ liệu ngày hợp lệ
-                        is_date = True
+                    if s_dt.notna().any(): is_date = True
                 except: is_date = False
 
-                # Ưu tiên 2: Chuyển sang Số
                 is_num = False
                 if not is_date:
                     try:
                         s_num = pd.to_numeric(col_series, errors='coerce')
                         v_num = float(clean_val)
-                        if s_num.notna().any():
-                            is_num = True
+                        if s_num.notna().any(): is_num = True
                     except: is_num = False
 
-                # Thực hiện lọc dựa trên kiểu đã xác định
-                if is_date: # Lọc theo Ngày
+                if is_date:
                     if selected_op == ">": current_df = current_df[s_dt > v_dt]
                     elif selected_op == "<": current_df = current_df[s_dt < v_dt]
                     elif selected_op == ">=": current_df = current_df[s_dt >= v_dt]
@@ -218,7 +204,7 @@ def apply_smart_filter_v87(df, filter_str, debug_container=None):
                     elif selected_op == "!=": current_df = current_df[s_dt != v_dt]
                     type_msg = "Ngày tháng"
 
-                elif is_num: # Lọc theo Số
+                elif is_num:
                     if selected_op == ">": current_df = current_df[s_num > v_num]
                     elif selected_op == "<": current_df = current_df[s_num < v_num]
                     elif selected_op == ">=": current_df = current_df[s_num >= v_num]
@@ -227,21 +213,21 @@ def apply_smart_filter_v87(df, filter_str, debug_container=None):
                     elif selected_op == "!=": current_df = current_df[s_num != v_num]
                     type_msg = "Số học"
 
-                else: # Lọc theo Chuỗi (String) - Fallback
-                    s_str = col_series.astype(str).str.strip() # Trim space
+                else:
+                    s_str = col_series.astype(str).str.strip()
                     if selected_op == ">": current_df = current_df[s_str > str(clean_val)]
                     elif selected_op == "<": current_df = current_df[s_str < str(clean_val)]
                     elif selected_op == ">=": current_df = current_df[s_str >= str(clean_val)]
                     elif selected_op == "<=": current_df = current_df[s_str <= str(clean_val)]
                     elif selected_op in ["=", "=="]: current_df = current_df[s_str == str(clean_val)]
                     elif selected_op == "!=": current_df = current_df[s_str != str(clean_val)]
-                    type_msg = "Chuỗi văn bản"
+                    type_msg = "Chuỗi"
 
             if debug_container:
                 debug_container.caption(f"👉 Lọc {i+1}: `{real_col_name}` {selected_op} `{clean_val}` ({type_msg}) -> Còn {len(current_df)} dòng")
 
         except Exception as e:
-            return None, f"Lỗi xử lý điều kiện '{fs}': {str(e)}"
+            return None, f"Lỗi xử lý '{fs}': {str(e)}"
 
     return current_df, None
 
@@ -623,31 +609,22 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             time.sleep(1)
 
         # [V87] Tính toán Log Row chuẩn
-        # ... (Đoạn code ghi dữ liệu vào Sheet nằm ở trên) ...
-
-        # [ĐÂY LÀ PHẦN TÍNH LOG ROW]
-        # current_cursor: Con trỏ bắt đầu (Được lấy từ start_row - dòng cuối sau khi xóa/hoặc dòng cuối hiện tại)
-        current_cursor = start_row 
-        
+        current_cursor = start_row
         for df, src_link, r_idx, w_mode in tasks_list:
-            count = len(df) # Đếm số dòng của file nguồn này
-            
+            count = len(df)
             if count > 0:
-                # Tính dòng kết thúc = Dòng đầu + Số dòng - 1
                 end = current_cursor + count - 1
-                
-                # Tạo chuỗi Log hiển thị (Ví dụ: "101 - 150")
                 rng_str = f"{current_cursor} - {end}"
-                
-                # Cập nhật con trỏ cho file tiếp theo (nếu gộp nhiều file)
                 current_cursor += count
             else:
                 rng_str = "0 dòng"
             
-            # Lưu kết quả vào map để trả về giao diện
             result_map[r_idx] = ("Thành công", rng_str, count)
             
         return True, f"Cập nhật {len(df_aligned)} dòng", result_map
+
+    except Exception as e: return False, f"Lỗi Ghi: {str(e)}", {}
+
 # --- PIPELINE MAIN FUNCTION ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
@@ -821,6 +798,7 @@ def rename_block_action(old, new, creds, uid):
     if not acquire_lock(creds, uid): return False
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
+        # [V87] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df.loc[df[COL_BLOCK_NAME] == old, COL_BLOCK_NAME] = new
         wks.clear(); 
@@ -833,6 +811,7 @@ def delete_block_direct(blk, creds, uid):
     if not acquire_lock(creds, uid): return
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
+        # [V87] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
         df_new = df[df[COL_BLOCK_NAME] != blk]
         wks.clear(); 
@@ -854,7 +833,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V87 - Debugger)", help="V87: Debug Filter"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V88 - Syntax Fix)", help="V88: Fixed Try-Except"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -953,7 +932,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v87"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v88"
     )
 
     if edt_df[COL_COPY_FLAG].any():
@@ -1030,4 +1009,3 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
-
