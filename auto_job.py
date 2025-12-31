@@ -1,470 +1,515 @@
 import pandas as pd
 import time
-import random
 import gspread
 import json
-import os
+import re
 import pytz
-from datetime import datetime
+import os
+import uuid
+import numpy as np
+import gc
+from gspread_dataframe import get_as_dataframe, set_with_dataframe
+from datetime import datetime, timedelta
 from google.oauth2 import service_account
-from gspread_dataframe import get_as_dataframe
 from collections import defaultdict
 
-# --- CẤU HÌNH (Sửa lại nếu cần, hoặc dùng biến môi trường) ---
-# Cách lấy Config: Ưu tiên lấy từ Biến môi trường (cho Github Actions), 
-# nếu không có thì thử lấy từ file secrets.toml hoặc điền trực tiếp vào đây (không khuyến khích điền trực tiếp).
-
+# ==========================================
+# 1. CẤU HÌNH & CONSTANTS
+# ==========================================
 SHEET_CONFIG_NAME = "luu_cau_hinh"
+SHEET_SYS_CONFIG = "sys_config"
 SHEET_LOG_NAME = "log_lanthucthi"
+SHEET_ACTIVITY_NAME = "log_hanh_vi"
 SHEET_LOCK_NAME = "sys_lock"
 
-COL_LINK_SRC = "Link file nguồn"
-COL_LABEL_SRC = "Sheet nguồn"
-COL_MONTH_SRC = "Tháng"
 COL_BLOCK_NAME = "Block_Name"
+COL_STATUS = "Trạng thái"
 COL_DATA_RANGE = "Vùng lấy dữ liệu"
-DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
+COL_MONTH = "Tháng"
+COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"
+COL_TGT_LINK = "Link dữ liệu đích"
+COL_SRC_SHEET = "Tên sheet nguồn dữ liệu gốc"
+COL_TGT_SHEET = "Tên sheet dữ liệu đích"
+COL_FILTER = "Dieu_Kien_Loc"
+COL_HEADER = "Lay_Header"
 
-# --- 1. HÀM HỖ TRỢ XÁC THỰC ---
-def get_creds_and_id():
-    """
-    Lấy Credential và Sheet ID từ biến môi trường (Environment Variables).
-    Setup trên Github Secrets:
-    1. GCP_SERVICE_ACCOUNT: Copy toàn bộ nội dung file JSON vào.
-    2. HISTORY_SHEET_ID: ID của file Google Sheet cấu hình.
-    """
+SCHED_COL_BLOCK = "Block_Name"
+SCHED_COL_TYPE = "Loai_Lich"
+SCHED_COL_VAL1 = "Thong_So_Chinh" # Giờ (08:00) hoặc Số phút (50)
+SCHED_COL_VAL2 = "Thong_So_Phu"   # Ngày (4,8) hoặc Thứ (T2,T3)
+
+SYS_COL_LINK = "Link file nguồn"
+SYS_COL_SHEET = "Sheet nguồn"
+SYS_COL_MONTH = "Tháng"
+
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+
+# Khoảng thời gian nhìn lại (phút) để bắt dính lịch khi GitHub bị trễ
+LOOKBACK_MINUTES = 18 
+
+# ==========================================
+# 2. CORE UTILS (SERVER SIDE)
+# ==========================================
+def get_creds():
     try:
-        # Cách 1: Lấy từ Environment Variable (Dùng cho Github Actions/Server)
-        creds_json_str = os.environ.get("GCP_SERVICE_ACCOUNT")
-        sheet_id = os.environ.get("HISTORY_SHEET_ID")
-
-        # Cách 2: (Fallback) Nếu chạy Local mà chưa set Env, thử đọc từ file toml (nếu bạn muốn)
-        # Hoặc bạn có thể hard-code tạm thời để test (nhưng nhớ xóa khi up lên git)
-        if not creds_json_str:
-            # Ví dụ đọc từ file local (bỏ comment nếu cần)
-            # with open("service_account.json", "r") as f: creds_json_str = f.read()
-            # sheet_id = "PASTE_YOUR_SHEET_ID_HERE"
-            print("⚠️ Không tìm thấy biến môi trường GCP_SERVICE_ACCOUNT")
-            return None, None
-
-        creds_info = json.loads(creds_json_str)
-        if "private_key" in creds_info:
-            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+        creds_json = os.environ.get("GCP_SERVICE_ACCOUNT")
+        if creds_json:
+            creds_info = json.loads(creds_json)
+            if "private_key" in creds_info:
+                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+            return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         
-        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-        creds = service_account.Credentials.from_service_account_info(creds_info, scopes=scopes)
-        return creds, sheet_id
+        if os.path.exists("secrets.json"):
+            return service_account.Credentials.from_service_account_file("secrets.json", scopes=SCOPES)
+            
+        print("❌ Lỗi: Không tìm thấy Credentials.")
+        return None
     except Exception as e:
-        print(f"❌ Lỗi Authentication: {e}")
-        return None, None
+        print(f"❌ Lỗi Auth: {e}")
+        return None
 
-def get_sh_with_retry(creds, sheet_id_or_key):
-    gc = gspread.authorize(creds)
-    max_retries = 3
+def get_history_sheet_id():
+    raw_id = os.environ.get("HISTORY_SHEET_ID")
+    if not raw_id: return None
+    extracted = extract_id(raw_id)
+    if extracted: return extracted
+    return raw_id
+
+def safe_api_call(func, *args, **kwargs):
+    max_retries = 5
     for i in range(max_retries):
         try:
-            return gc.open_by_key(sheet_id_or_key)
+            return func(*args, **kwargs)
         except Exception as e:
-            if i == max_retries - 1: raise e
-            time.sleep((2 ** i) + random.random())
+            error_str = str(e).lower()
+            if "429" in error_str or "quota" in error_str:
+                wait_time = (2 ** i) + 5
+                print(f"⚠️ Quota exceeded. Waiting {wait_time}s...")
+                time.sleep(wait_time)
+            elif i == max_retries - 1: raise e
+            else: time.sleep(2)
     return None
+
+def get_sh_with_retry(creds, sheet_id):
+    gc_client = gspread.authorize(creds)
+    masked_id = sheet_id[:5] + "..." + sheet_id[-5:] if sheet_id and len(sheet_id) > 10 else "N/A"
+    print(f"🔗 Connecting to Master Sheet ID: {masked_id}")
+    return safe_api_call(gc_client.open_by_key, sheet_id)
 
 def extract_id(url):
     if not isinstance(url, str): return None
     if "docs.google.com" in url:
-        try: return url.split("/d/")[1].split("/")[0]
+        try: 
+            match = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
+            if match: return match.group(1)
         except: return None
     return None
 
 def col_name_to_index(col_name):
     col_name = col_name.upper()
     index = 0
-    for char in col_name:
-        index = index * 26 + (ord(char) - ord('A')) + 1
+    for char in col_name: index = index * 26 + (ord(char) - ord('A')) + 1
     return index - 1
 
-# --- 2. CÁC HÀM XỬ LÝ DATA (CORE LOGIC) ---
-def fetch_data_preserve_columns(row_config, creds):
-    link_src = str(row_config.get('Link dữ liệu lấy dữ liệu', '')).strip()
-    source_label = str(row_config.get('Tên sheet nguồn dữ liệu gốc', '')).strip()
-    month_val = str(row_config.get('Tháng', ''))
-    data_range_str = str(row_config.get(COL_DATA_RANGE, 'Lấy hết')).strip()
-    if not data_range_str or data_range_str.lower() == 'nan': data_range_str = "Lấy hết"
+# ==========================================
+# 3. LOGIC SMART FILTER & ETL
+# ==========================================
+def apply_smart_filter(df, filter_str):
+    if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
+        return df, None
+    fs = filter_str.strip()
+    operators = [" contains ", "==", "!=", ">=", "<=", ">", "<", "="]
+    selected_op = None
+    for op in operators:
+        if op in fs: selected_op = op; break
+    if not selected_op: return None, f"Lỗi cú pháp: Không tìm thấy toán tử trong '{fs}'"
+
+    parts = fs.split(selected_op, 1)
+    user_col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
+    real_col_name = None
+    if user_col in df.columns: real_col_name = user_col
+    else:
+        for col in df.columns:
+            if str(col).strip() == user_col: real_col_name = col; break
+    if not real_col_name: return None, f"Không tìm thấy cột '{user_col}'"
+
+    user_val = parts[1].strip()
+    if (user_val.startswith("'") and user_val.endswith("'")) or (user_val.startswith('"') and user_val.endswith('"')):
+        clean_val = user_val[1:-1]
+    else: clean_val = user_val
+
+    try:
+        col_str = df[real_col_name].astype(str)
+        if selected_op == " contains ": return df[col_str.str.contains(clean_val, case=False, na=False)], None
+        elif selected_op in ["=", "=="]: return df[col_str == str(clean_val)], None
+        elif selected_op == "!=": return df[col_str != str(clean_val)], None
+        else:
+            numeric_col = pd.to_numeric(df[real_col_name], errors='coerce')
+            try: numeric_val = float(clean_val)
+            except: return None, f"Giá trị '{clean_val}' không phải là số"
+            if selected_op == ">": return df[numeric_col > numeric_val], None
+            if selected_op == "<": return df[numeric_col < numeric_val], None
+            if selected_op == ">=": return df[numeric_col >= numeric_val], None
+            if selected_op == "<=": return df[numeric_col <= numeric_val], None
+    except Exception as e: return None, f"Lỗi thực thi lọc: {str(e)}"
+    return df, None
+
+def fetch_data(row_config, creds, target_headers=None):
+    link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
+    source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
+    month_val = str(row_config.get(COL_MONTH, ''))
     
+    raw_range = str(row_config.get(COL_DATA_RANGE, '')).strip()
+    data_range_str = "Lấy hết" if raw_range.lower() in ['nan', 'none', 'null', '', 'lấy hết'] else raw_range
+
+    raw_filter = str(row_config.get(COL_FILTER, '')).strip()
+    if raw_filter.lower() in ['nan', 'none', 'null']: raw_filter = ""
+    
+    include_header = str(row_config.get(COL_HEADER, 'FALSE')).strip().upper() == 'TRUE'
     sheet_id = extract_id(link_src)
-    if not sheet_id: return None, sheet_id, "Link lỗi"
+    if not sheet_id: return None, "Link lỗi"
     
-    df = None
     try:
         sh_source = get_sh_with_retry(creds, sheet_id)
-        if source_label:
-            try: wks_source = sh_source.worksheet(source_label)
-            except: return None, sheet_id, f"❌ Không tìm thấy sheet: '{source_label}'"
-        else: wks_source = sh_source.sheet1
-            
-        data = wks_source.get_all_values()
-        if data and len(data) > 0:
-            headers = data[0]
-            rows = data[1:]
-            if not rows:
-                df = pd.DataFrame(columns=headers)
+        wks_source = sh_source.worksheet(source_label) if source_label else sh_source.sheet1
+        data = safe_api_call(wks_source.get_all_values)
+        if not data: return pd.DataFrame(), "Sheet trắng"
+
+        header_row = data[0]
+        body_rows = data[1:]
+        
+        unique_headers = []
+        seen = {}
+        for col in header_row:
+            if col in seen:
+                seen[col] += 1
+                unique_headers.append(f"{col}_{seen[col]}")
             else:
-                df = pd.DataFrame(rows, columns=headers)
-            
-            if data_range_str != "Lấy hết" and ":" in data_range_str:
-                try:
-                    start_col_str, end_col_str = data_range_str.split(":")
-                    start_idx = col_name_to_index(start_col_str.strip())
-                    end_idx = col_name_to_index(end_col_str.strip())
-                    if start_idx >= 0 and end_idx >= start_idx:
-                        end_idx = min(end_idx, len(df.columns) - 1)
-                        df = df.iloc[:, start_idx : end_idx + 1]
-                except: pass
-
-            df = df.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
-            status_msg = "Thành công"
-        else:
-            status_msg = "Sheet trắng tinh"
-            
-    except Exception as e:
-        return None, sheet_id, f"Lỗi tải data: {str(e)}"
-
-    if df is not None:
-        df[COL_LINK_SRC] = link_src
-        df[COL_LABEL_SRC] = source_label
-        df[COL_MONTH_SRC] = month_val
-        return df, sheet_id, status_msg
-    return None, sheet_id, "Không lấy được dữ liệu"
-
-def scan_realtime_row_ranges(target_link, target_sheet_name, creds):
-    results = {}
-    try:
-        target_id = extract_id(target_link)
-        if not target_id: return {}
-        sh = get_sh_with_retry(creds, target_id)
-        real_sheet_name = str(target_sheet_name).strip()
-        if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
-        try: wks = sh.worksheet(real_sheet_name)
-        except: return {}
-        all_data = wks.get_all_values()
-        if not all_data: return {}
-        headers = all_data[0]
-        try: link_col_idx = headers.index(COL_LINK_SRC)
-        except ValueError: return {} 
-        temp_map = {} 
-        for i, row in enumerate(all_data[1:], start=2):
-            if len(row) > link_col_idx:
-                link_val = row[link_col_idx]
-                if link_val:
-                    if link_val not in temp_map: temp_map[link_val] = [i, i]
-                    else: temp_map[link_val][1] = i 
-        for link, (start, end) in temp_map.items():
-            results[link] = f"{start} - {end}"
-    except: return {}
-    return results
-
-def smart_update_safe(tasks_list, target_link, target_sheet_name, creds):
-    try:
-        target_id = extract_id(target_link)
-        if not target_id: return False, "Link đích lỗi"
-        sh = get_sh_with_retry(creds, target_id)
-        real_sheet_name = str(target_sheet_name).strip()
-        if not real_sheet_name: real_sheet_name = "Tong_Hop_Data"
-        try: wks = sh.worksheet(real_sheet_name)
-        except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
+                seen[col] = 0
+                unique_headers.append(col)
         
-        links_to_remove = [t[1] for t in tasks_list if t[1] and len(str(t[1])) > 5]
-        existing_headers = []
-        try: existing_headers = wks.row_values(1)
-        except: pass
-        
-        if existing_headers and links_to_remove:
-            try: 
-                link_col_idx = existing_headers.index(COL_LINK_SRC) + 1
-                col_values = wks.col_values(link_col_idx)
-                rows_to_delete = []
-                for i, val in enumerate(col_values):
-                    if i > 0 and str(val).strip() in links_to_remove: rows_to_delete.append(i + 1)
-                
-                if rows_to_delete:
-                    rows_to_delete.sort()
-                    ranges = []; start = rows_to_delete[0]; end = start
-                    for r in rows_to_delete[1:]:
-                        if r == end + 1: end = r
-                        else: ranges.append((start, end)); start = r; end = r
-                    ranges.append((start, end))
-                    delete_reqs = []
-                    for start, end in reversed(ranges):
-                        delete_reqs.append({"deleteDimension": {"range": {"sheetId": wks.id, "dimension": "ROWS", "startIndex": start - 1, "endIndex": end}}})
-                    if delete_reqs:
-                        sh.batch_update({'requests': delete_reqs})
-                        time.sleep(1)
-            except ValueError: pass
+        df_working = pd.DataFrame(body_rows, columns=unique_headers)
 
-        if not existing_headers:
-            first_df = tasks_list[0][0]
-            if first_df is not None and not first_df.empty:
-                final_headers = first_df.columns.tolist()
-                wks.append_row(final_headers)
-                existing_headers = final_headers
-            else: return True, "Không có dữ liệu nguồn để tạo header"
-        else:
-            final_headers = existing_headers
-            all_new_cols = []
-            for t in tasks_list:
-                if t[0] is not None: all_new_cols.extend(t[0].columns.tolist())
-            seen = set(existing_headers)
-            cols_to_add = [x for x in all_new_cols if x not in seen and not seen.add(x)]
-            if cols_to_add:
-                wks.resize(cols=len(existing_headers) + len(cols_to_add))
-                final_headers = existing_headers + cols_to_add
-                wks.update(range_name="A1", values=[final_headers])
+        if target_headers:
+            num_src = len(df_working.columns); num_tgt = len(target_headers)
+            min_cols = min(num_src, num_tgt)
+            old_cols = df_working.columns.tolist()
+            rename_map = {old_cols[i]: target_headers[i] for i in range(min_cols)}
+            df_working = df_working.rename(columns=rename_map)
+            if num_src > num_tgt: df_working = df_working.iloc[:, :num_tgt]
 
-        data_to_append = []
-        for df, src_link in tasks_list:
-            if df is not None and not df.empty:
-                df_aligned = df.reindex(columns=final_headers, fill_value="")
-                data_to_append.extend(df_aligned.values.tolist())
-
-        if data_to_append:
-            BATCH_SIZE = 5000
-            for i in range(0, len(data_to_append), BATCH_SIZE):
-                chunk = data_to_append[i : i + BATCH_SIZE]
-                wks.append_rows(chunk)
-                time.sleep(1)
-            return True, f"Thành công (+{len(data_to_append)} dòng)"
-        return True, "Thành công (Không có data mới)"
-    except Exception as e: return False, f"Lỗi Ghi: {str(e)}"
-
-# --- 3. SYSTEM LOCK & LOG ---
-def get_system_lock(creds, history_id):
-    try:
-        sh = get_sh_with_retry(creds, history_id)
-        try: wks = sh.worksheet(SHEET_LOCK_NAME)
-        except: 
-            wks = sh.add_worksheet(SHEET_LOCK_NAME, rows=10, cols=5)
-            wks.update([["is_locked", "user", "time_start"], ["FALSE", "", ""]])
-            return False, "", ""
-        val = wks.cell(2, 1).value
-        user = wks.cell(2, 2).value
-        time_str = wks.cell(2, 3).value
-        if val == "TRUE":
+        if data_range_str != "Lấy hết" and ":" in data_range_str:
             try:
-                if (datetime.now() - datetime.strptime(time_str, "%d/%m/%Y %H:%M:%S")).total_seconds() > 1800: return False, "", ""
+                s_str, e_str = data_range_str.split(":")
+                s_idx = col_name_to_index(s_str.strip()); e_idx = col_name_to_index(e_str.strip())
+                if s_idx >= 0: df_working = df_working.iloc[:, s_idx : e_idx + 1]
             except: pass
-            return True, user, time_str
-        return False, "", ""
-    except: return False, "", ""
 
-def set_system_lock(creds, history_id, user_id, lock=True):
+        if raw_filter:
+            df_filtered, err = apply_smart_filter(df_working, raw_filter)
+            if err: return None, f"Filter Error: {err}"
+            df_working = df_filtered
+
+        if include_header:
+            df_header_row = pd.DataFrame([df_working.columns.tolist()], columns=df_working.columns)
+            df_final = pd.concat([df_header_row, df_working], ignore_index=True)
+        else:
+            df_final = df_working
+
+        df_final = df_final.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
+        df_final[SYS_COL_LINK] = link_src.strip()
+        df_final[SYS_COL_SHEET] = source_label.strip()
+        df_final[SYS_COL_MONTH] = month_val.strip()
+        
+        return df_final, "OK"
+
+    except Exception as e: return None, f"Lỗi tải: {str(e)}"
+
+def get_rows_to_delete_dynamic(wks, keys_to_delete):
+    all_values = safe_api_call(wks.get_all_values)
+    if not all_values: return []
+    headers = all_values[0]
     try:
-        sh = get_sh_with_retry(creds, history_id)
-        try: wks = sh.worksheet(SHEET_LOCK_NAME)
-        except: wks = sh.add_worksheet(SHEET_LOCK_NAME, rows=10, cols=5)
-        now_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        wks.update("A2:C2", [["TRUE", user_id, now_str]] if lock else [["FALSE", "", ""]])
-    except: pass
+        idx_link = headers.index(SYS_COL_LINK); idx_sheet = headers.index(SYS_COL_SHEET); idx_month = headers.index(SYS_COL_MONTH)
+    except ValueError: return [] 
+    rows_to_delete = []
+    for i, row in enumerate(all_values[1:], start=2): 
+        l = row[idx_link].strip() if len(row) > idx_link else ""
+        s = row[idx_sheet].strip() if len(row) > idx_sheet else ""
+        m = row[idx_month].strip() if len(row) > idx_month else ""
+        if (l, s, m) in keys_to_delete: rows_to_delete.append(i)
+    return rows_to_delete
 
-def write_detailed_log(creds, history_id, log_data_list):
-    if not log_data_list: return
+def batch_delete_rows(sh, sheet_id, row_indices):
+    if not row_indices: return
+    row_indices.sort(reverse=True)
+    ranges = []
+    if len(row_indices) > 0:
+        start = row_indices[0]; end = start
+        for r in row_indices[1:]:
+            if r == start - 1: start = r
+            else: ranges.append((start, end)); start = r; end = r
+        ranges.append((start, end))
+    requests = []
+    for start, end in ranges:
+        requests.append({"deleteDimension": {"range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": start - 1, "endIndex": end}}})
+    batch_size = 100
+    for i in range(0, len(requests), batch_size):
+        safe_api_call(sh.batch_update, {'requests': requests[i:i+batch_size]})
+        time.sleep(1)
+
+def write_data(tasks_list, target_link, target_sheet_name, creds):
     try:
-        sh = get_sh_with_retry(creds, history_id)
-        try: wks = sh.worksheet(SHEET_LOG_NAME)
-        except: 
-            wks = sh.add_worksheet(SHEET_LOG_NAME, rows=1000, cols=15)
-            wks.append_row([
-                "Ngày & giờ get dữ liệu", "Vùng lấy dữ liệu", "Tháng", "Nhân sự get", 
-                "Link nguồn", "Link đích", "Sheet Đích", "Sheet nguồn lấy dữ liệu", 
-                "Trạng Thái", "Số Dòng Đã Lấy", "Dòng dữ liệu cập nhật", "Chạy từ khối"
-            ])
-        wks.append_rows(log_data_list)
-    except Exception as e: print(f"Lỗi log: {e}")
+        target_id = extract_id(target_link)
+        if not target_id: return False, "Link lỗi", {}
+        sh = get_sh_with_retry(creds, target_id)
+        real_sheet_name = str(target_sheet_name).strip() or "Tong_Hop_Data"
+        
+        all_titles = [s.title for s in safe_api_call(sh.worksheets)]
+        if real_sheet_name in all_titles:
+            wks = sh.worksheet(real_sheet_name)
+        else:
+            wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
+            print(f"✨ Created new sheet: {real_sheet_name}")
+        
+        df_new_all = pd.DataFrame()
+        for df, _, _ in tasks_list:
+            df_new_all = pd.concat([df_new_all, df], ignore_index=True)
+        
+        if df_new_all.empty: return True, "No Data", {}
 
-# --- 4. PIPELINE ---
-def process_pipeline(rows_to_run, user_id, block_name_run, creds, history_id):
-    # Lock Check
-    is_locked, locking_user, lock_time = get_system_lock(creds, history_id)
-    if is_locked and locking_user != user_id and "AutoAll" not in user_id:
-        print(f"🔒 Hệ thống đang bận bởi {locking_user}")
-        return False, {}, 0
+        existing_headers = safe_api_call(wks.row_values, 1)
+        if not existing_headers:
+            final_headers = df_new_all.columns.tolist()
+            wks.update(range_name="A1", values=[final_headers])
+            existing_headers = final_headers
+        else:
+            updated = existing_headers.copy(); added = False
+            for col in [SYS_COL_LINK, SYS_COL_SHEET, SYS_COL_MONTH]:
+                if col not in updated: updated.append(col); added = True
+            if added: wks.update(range_name="A1", values=[updated]); existing_headers = updated
+
+        df_aligned = pd.DataFrame()
+        for col in existing_headers:
+            if col in df_new_all.columns: df_aligned[col] = df_new_all[col]
+            else: df_aligned[col] = ""
+        
+        keys = set()
+        for idx, row in df_new_all.iterrows():
+            keys.add((str(row[SYS_COL_LINK]).strip(), str(row[SYS_COL_SHEET]).strip(), str(row[SYS_COL_MONTH]).strip()))
+        
+        rows_to_del = get_rows_to_delete_dynamic(wks, keys)
+        if rows_to_del:
+            batch_delete_rows(sh, wks.id, rows_to_del)
+        
+        start_row = len(safe_api_call(wks.get_all_values)) + 1
+        chunk_size = 5000
+        new_vals = df_aligned.fillna('').values.tolist()
+        for i in range(0, len(new_vals), chunk_size):
+            safe_api_call(wks.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
+            time.sleep(1)
+
+        result_map = {}
+        current_cursor = start_row
+        for df, _, r_idx in tasks_list:
+            count = len(df)
+            end = current_cursor + count - 1
+            result_map[r_idx] = ("Thành công", f"{current_cursor} - {end}", count)
+            current_cursor += count
+            
+        return True, f"Updated {len(df_aligned)} rows", result_map
+
+    except Exception as e: return False, f"Write Error: {str(e)}", {}
+
+# ==========================================
+# 4. SCHEDULER LOGIC (V74 - STANDARD LOGIC)
+# ==========================================
+def is_time_in_window(target_time_str, now_dt):
+    """
+    Kiểm tra xem target_time (HH:MM) có xuất hiện trong khoảng 
+    [now - 18 phút, now] hay không.
+    Hàm này dùng chung cho Chạy Ngày, Tuần, Tháng.
+    """
+    try:
+        h_set, m_set = map(int, target_time_str.strip().split(":"))
+        # Tạo mốc thời gian chạy của ngày hôm nay
+        sched_dt = now_dt.replace(hour=h_set, minute=m_set, second=0, microsecond=0)
+        
+        # Tính độ lệch: (Hiện tại - Mốc cài đặt)
+        diff = (now_dt - sched_dt).total_seconds() / 60 
+        
+        # Nếu độ lệch từ 0 đến 18 phút -> Có nghĩa là vừa mới qua giờ chạy -> Chạy
+        if 0 <= diff <= LOOKBACK_MINUTES:
+            return True
+        return False
+    except: return False
+
+def is_time_to_run_standard(row, now_dt):
+    sched_type = str(row.get(SCHED_COL_TYPE, "")).strip()
+    val1 = str(row.get(SCHED_COL_VAL1, "")).strip() # Giờ (08:00) hoặc Phút (50)
+    val2 = str(row.get(SCHED_COL_VAL2, "")).strip() # Ngày (4,8) hoặc Thứ (T2,T3)
+
+    if sched_type == "Không chạy": return False
+
+    # Mapping cho Thứ và Ngày
+    week_map = {0: "T2", 1: "T3", 2: "T4", 3: "T5", 4: "T6", 5: "T7", 6: "CN"}
+    current_wday_str = week_map[now_dt.weekday()]
+    current_day_str = str(now_dt.day)
+
+    # 1. Chạy theo phút
+    if sched_type == "Chạy theo phút":
+        try:
+            interval = int(val1)
+            if interval < 30: interval = 30 # Min 30p theo yêu cầu
+            
+            # Tính tổng số phút trong ngày hiện tại
+            curr_total_min = now_dt.hour * 60 + now_dt.minute
+            
+            # Tính thời điểm quá khứ (lùi lại để check)
+            prev_total_min = curr_total_min - LOOKBACK_MINUTES
+            
+            # Logic: Nếu số lần chia chẵn cho interval thay đổi -> Đã qua mốc
+            # Ví dụ: Interval 50. Lúc 08:10 (490p) -> 490//50 = 9
+            # Lúc 08:25 (505p) -> 505//50 = 10 -> Nhảy số -> Chạy (mốc 500 - 08:20)
+            
+            count_curr = curr_total_min // interval
+            count_prev = prev_total_min // interval
+            
+            if count_curr > count_prev:
+                return True
+        except: pass
+
+    # 2. Hàng ngày: Chỉ check giờ (val1)
+    elif sched_type == "Hàng ngày":
+        return is_time_in_window(val1, now_dt)
+
+    # 3. Hàng tuần: Check Thứ (val2) + Giờ (val1)
+    elif sched_type == "Hàng tuần":
+        # Tách danh sách thứ: "T2, T3" -> ["T2", "T3"]
+        target_days = [x.strip() for x in val2.split(",")]
+        if current_wday_str in target_days:
+            return is_time_in_window(val1, now_dt)
+
+    # 4. Hàng tháng: Check Ngày (val2) + Giờ (val1)
+    elif sched_type == "Hàng tháng":
+        # Tách danh sách ngày: "4, 8" -> ["4", "8"]
+        target_dates = [x.strip() for x in val2.split(",")]
+        if current_day_str in target_dates:
+            return is_time_in_window(val1, now_dt)
+
+    return False
+
+def run_auto_job():
+    print("🚀 Starting Auto Job (V74 - Standard Logic)...")
     
-    set_system_lock(creds, history_id, user_id, lock=True)
+    creds = get_creds()
+    if not creds: return
+    
+    master_id = get_history_sheet_id()
+    if not master_id: 
+        print("❌ Chưa set HISTORY_SHEET_ID"); return
+
+    sh_master = get_sh_with_retry(creds, master_id)
+    if not sh_master:
+        print("❌ Không thể mở Sheet Master.")
+        return
+    
     try:
-        grouped_tasks = defaultdict(list)
-        total_fetched_rows = 0
+        wks_sched = sh_master.worksheet(SHEET_SYS_CONFIG)
+        df_sched = get_as_dataframe(wks_sched, evaluate_formulas=True, dtype=str)
         
-        for row in rows_to_run:
-            raw_t = row.get('Link dữ liệu đích', '')
-            t_link = str(raw_t[0]).strip() if isinstance(raw_t, list) and raw_t else str(raw_t).strip()
-            row['Link dữ liệu đích'] = t_link 
-            raw_s = row.get('Link dữ liệu lấy dữ liệu', '')
-            s_link = str(raw_s[0]).strip() if isinstance(raw_s, list) and raw_s else str(raw_s).strip()
-            row['Link dữ liệu lấy dữ liệu'] = s_link 
-            t_sheet = str(row.get('Tên sheet dữ liệu đích', '')).strip()
-            if not t_sheet: t_sheet = "Tong_Hop_Data"
-            if COL_DATA_RANGE not in row or not row[COL_DATA_RANGE]: row[COL_DATA_RANGE] = "Lấy hết"
-            grouped_tasks[(t_link, t_sheet)].append(row)
+        wks_config = sh_master.worksheet(SHEET_CONFIG_NAME)
+        df_config = get_as_dataframe(wks_config, evaluate_formulas=True, dtype=str)
+        df_config['index_map'] = df_config.index
+    except Exception as e:
+        print(f"❌ Lỗi đọc config: {e}"); return
 
-        global_results_map = {} 
-        log_entries = []
-        tz_vn = pytz.timezone('Asia/Ho_Chi_Minh')
-        time_now = datetime.now(tz_vn).strftime("%d/%m/%Y %H:%M:%S")
+    # Check Schedule
+    tz = pytz.timezone('Asia/Ho_Chi_Minh')
+    now = datetime.now(tz)
+    print(f"🕒 Time Check: {now.strftime('%H:%M:%S')} (Lookback {LOOKBACK_MINUTES}m)")
 
-        for (target_link, target_sheet), group_rows in grouped_tasks.items():
-            if not target_link: continue
-            
-            tasks_list = []
-            for row in group_rows:
-                print(f"📥 Đang tải: {row.get('Link dữ liệu lấy dữ liệu')}...")
-                df, sid, status = fetch_data_preserve_columns(row, creds)
-                src_link = row['Link dữ liệu lấy dữ liệu']
-                
-                if df is not None:
-                    tasks_list.append((df, src_link))
-                    total_fetched_rows += len(df)
-                else:
-                    global_results_map[src_link] = ("Lỗi tải/Quyền", "")
-                    log_entries.append([
-                        time_now, str(row.get(COL_DATA_RANGE, 'Lấy hết')), str(row.get('Tháng', '')), 
-                        user_id, src_link, target_link, target_sheet,
-                        row.get('Tên sheet nguồn dữ liệu gốc', ''), "Lỗi tải", "0", "", block_name_run
-                    ])
-
-            msg_update = ""
-            success_update = True
-            if tasks_list:
-                print(f"💾 Đang ghi vào: {target_link}...")
-                success_update, msg_update = smart_update_safe(tasks_list, target_link, target_sheet, creds)
-            
-            realtime_ranges = scan_realtime_row_ranges(target_link, target_sheet, creds)
-            
-            for link, rng in realtime_ranges.items():
-                if link not in global_results_map: global_results_map[link] = ("Cập nhật lại", rng)
-                else:
-                    current_msg = global_results_map[link][0]
-                    global_results_map[link] = (current_msg, rng)
-
-            for row in group_rows:
-                s_link = row['Link dữ liệu lấy dữ liệu']
-                status_str = "Thành công" if success_update else f"Lỗi: {msg_update}"
-                final_range = realtime_ranges.get(s_link, "")
-                
-                if any(t[1] == s_link for t in tasks_list) or (s_link in global_results_map and "Lỗi" in global_results_map[s_link][0]):
-                    height = "0"
-                    for df, sl in tasks_list:
-                        if sl == s_link: height = str(len(df))
-
-                    log_entries.append([
-                        time_now, str(row.get(COL_DATA_RANGE, 'Lấy hết')), str(row.get('Tháng', '')),
-                        user_id, s_link, target_link, target_sheet,
-                        row.get('Tên sheet nguồn dữ liệu gốc', ''), 
-                        status_str, height, final_range, block_name_run
-                    ])
-                    global_results_map[s_link] = (status_str, final_range)
-        
-        write_detailed_log(creds, history_id, log_entries)
-        return True, global_results_map, total_fetched_rows
-    finally:
-        set_system_lock(creds, history_id, user_id, lock=False)
-
-def verify_access_fast(url, creds):
-    sheet_id = extract_id(url)
-    if not sheet_id: return False, "Link lỗi"
-    try:
-        get_sh_with_retry(creds, sheet_id)
-        return True, "OK"
-    except Exception as e: return False, f"Lỗi: {e}"
-
-def check_permissions_strict(rows_to_run, creds):
-    checked_links = {} 
-    for row in rows_to_run:
-        # Nguồn
-        link_src = str(row.get('Link dữ liệu lấy dữ liệu', '')).strip()
-        if "docs.google.com" in link_src:
-            if link_src not in checked_links: checked_links[link_src] = verify_access_fast(link_src, creds)
-            if not checked_links[link_src][0]: return False
-        # Đích
-        link_tgt = str(row.get('Link dữ liệu đích', '')).strip()
-        if "docs.google.com" in link_tgt:
-            if link_tgt not in checked_links: checked_links[link_tgt] = verify_access_fast(link_tgt, creds)
-            if not checked_links[link_tgt][0]: return False
-    return True
-
-# --- MAIN RUNNER ---
-def main():
-    print("🚀 BẮT ĐẦU CHẠY AUTO JOB...")
-    creds, history_id = get_creds_and_id()
-    if not creds or not history_id:
-        print("❌ Thiếu Credential hoặc ID Sheet Config. Dừng.")
+    blocks_to_run = []
+    if SCHED_COL_BLOCK in df_sched.columns:
+        for _, row in df_sched.iterrows():
+            blk = str(row.get(SCHED_COL_BLOCK, ""))
+            # [V74] Sử dụng hàm check chuẩn
+            if is_time_to_run_standard(row, now):
+                print(f"⚡ MATCH: {blk}")
+                blocks_to_run.append(blk)
+    
+    if not blocks_to_run:
+        print("💤 Không có lịch phù hợp.")
         return
 
-    try:
-        # 1. Tải Config
-        print("📥 Đang đọc cấu hình...")
-        sh_config = get_sh_with_retry(creds, history_id)
-        wks_config = sh_config.worksheet(SHEET_CONFIG_NAME)
-        df_full = get_as_dataframe(wks_config, evaluate_formulas=True, dtype=str)
-        df_full = df_full.dropna(how='all')
-        
-        # Chuẩn hóa cột
-        required_cols = ['Trạng thái', COL_DATA_RANGE, 'Tháng', 'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 'Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 'Kết quả', 'Dòng dữ liệu', COL_BLOCK_NAME]
-        for c in required_cols:
-            if c not in df_full.columns: df_full[c] = ""
-        df_full[COL_BLOCK_NAME] = df_full[COL_BLOCK_NAME].replace('', DEFAULT_BLOCK_NAME).fillna(DEFAULT_BLOCK_NAME)
-        df_full[COL_DATA_RANGE] = df_full[COL_DATA_RANGE].replace('', 'Lấy hết').fillna('Lấy hết')
-        if 'Trạng thái' in df_full.columns:
-            df_full['Trạng thái'] = df_full['Trạng thái'].apply(lambda x: "Đã chốt" if str(x).strip() in ["Đã chốt", "Đã cập nhật", "TRUE"] else "Chưa chốt & đang cập nhật")
-
-        all_blocks = df_full[COL_BLOCK_NAME].unique()
-        total_all_rows = 0
-        user_id_run = "Auto_Bot_Github"
-
-        # 2. Duyệt từng Block
-        for blk in all_blocks:
-            print(f"⏳ Kiểm tra khối: {blk}...")
-            block_mask = (df_full[COL_BLOCK_NAME] == blk) & (df_full['Trạng thái'] == "Chưa chốt & đang cập nhật")
-            rows_blk = df_full[block_mask].to_dict('records')
-
-            if rows_blk:
-                # Check quyền
-                if not check_permissions_strict(rows_blk, creds):
-                    print(f"❌ Khối {blk} bị bỏ qua do lỗi quyền.")
-                    continue
-                
-                # Chạy Pipeline
-                _, results_map, rows_count = process_pipeline(rows_blk, user_id_run, blk, creds, history_id)
-                total_all_rows += rows_count
-                
-                # Cập nhật kết quả vào DataFrame
-                if results_map:
-                    for idx, row in df_full[block_mask].iterrows():
-                        s_link = str(row['Link dữ liệu lấy dữ liệu']).strip()
-                        if s_link in results_map:
-                            msg, rng = results_map[s_link]
-                            df_full.at[idx, 'Kết quả'] = msg
-                            df_full.at[idx, 'Dòng dữ liệu'] = rng
-                print(f"✅ Xong khối {blk} (+{rows_count} dòng).")
-            else:
-                print(f"⚪ Khối {blk} không có dữ liệu cần chạy.")
-
-        # 3. Lưu toàn bộ Config xuống Sheet
-        print("💾 Đang lưu kết quả cập nhật...")
-        target_cols = [
-            COL_BLOCK_NAME, 'Trạng thái', COL_DATA_RANGE, 'Tháng', 
-            'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 'Tên sheet dữ liệu đích', 
-            'Dòng dữ liệu', 'Kết quả', 'Tên sheet nguồn dữ liệu gốc'
+    log_buffer = []
+    
+    for blk in blocks_to_run:
+        block_rows = df_config[
+            (df_config[COL_BLOCK_NAME] == blk) & 
+            (df_config[COL_STATUS] == "Chưa chốt & đang cập nhật")
         ]
-        df_full = df_full.astype(str).replace(['nan', 'None', '<NA>'], '')
-        for c in target_cols:
-            if c not in df_full.columns: df_full[c] = ""
-        df_full = df_full[target_cols]
         
-        wks_config.clear()
-        wks_config.update([df_full.columns.tolist()] + df_full.values.tolist())
-        print(f"🏁 HOÀN TẤT! Tổng {total_all_rows} dòng.")
+        if block_rows.empty:
+            print(f"⚠️ Block {blk} rỗng/inactive.")
+            continue
 
-    except Exception as e:
-        print(f"❌ LỖI FATAL: {e}")
+        grouped = defaultdict(list)
+        for _, r in block_rows.iterrows():
+            tgt_key = (str(r.get(COL_TGT_LINK, '')).strip(), str(r.get(COL_TGT_SHEET, '')).strip())
+            grouped[tgt_key].append(r)
+
+        for (t_link, t_sheet), rows in grouped.items():
+            tasks = []
+            print(f"📂 Run: {blk} -> {t_sheet}")
+            
+            for r in rows:
+                lnk = r.get(COL_SRC_LINK, ''); lbl = r.get(COL_SRC_SHEET, '')
+                idx = r.get('index_map')
+                
+                df, msg = fetch_data(r, creds)
+                time.sleep(1.5)
+                
+                if df is not None:
+                    tasks.append((df, lnk, idx))
+                else:
+                    log_buffer.append([
+                        now.strftime("%d/%m/%Y %H:%M:%S"), r.get(COL_DATA_RANGE), r.get(COL_MONTH), 
+                        "AUTO_BOT", lnk, t_link, t_sheet, lbl, "Lỗi tải", "0", "", blk
+                    ])
+
+            if tasks:
+                ok, msg, res_map = write_data(tasks, t_link, t_sheet, creds)
+                print(f"  💾 {msg}")
+                
+                for df, lnk, idx in tasks:
+                    status, ranges, count = res_map.get(idx, ("Lỗi Ghi", "", 0))
+                    orig_r = df_config.loc[idx]
+                    
+                    log_buffer.append([
+                        now.strftime("%d/%m/%Y %H:%M:%S"), orig_r.get(COL_DATA_RANGE), orig_r.get(COL_MONTH), 
+                        "AUTO_BOT", lnk, t_link, t_sheet, orig_r.get(COL_SRC_SHEET), 
+                        status, str(count), ranges, blk
+                    ])
+
+    if log_buffer:
+        print(f"📝 Saving {len(log_buffer)} logs...")
+        try:
+            wks_log = sh_master.worksheet(SHEET_LOG_NAME)
+            cleaned_logs = [[str(x) for x in row] for row in log_buffer]
+            safe_api_call(wks_log.append_rows, cleaned_logs)
+        except Exception as e:
+            print(f"❌ Log Error: {e}")
+
+    try:
+        wks_act = sh_master.worksheet(SHEET_ACTIVITY_NAME)
+        safe_api_call(wks_act.append_row, [
+            now.strftime("%d/%m/%Y %H:%M:%S"), "AUTO_BOT", 
+            "Scheduled Run", f"Blocks: {', '.join(blocks_to_run)}"
+        ])
+    except: pass
+
+    print("🏁 Done.")
 
 if __name__ == "__main__":
-    main()
+    run_auto_job()
