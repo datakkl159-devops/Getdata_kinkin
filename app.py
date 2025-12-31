@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V79 - Write Mode)", layout="wide", page_icon="📝")
+st.set_page_config(page_title="Kinkin Manager (V80 - Write Fix)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -38,7 +38,7 @@ SHEET_NOTE_NAME = "database_ghi_chu"
 # --- ĐỊNH NGHĨA CỘT ---
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
-COL_WRITE_MODE = "Cach_Ghi" # [V79] Cột Mới
+COL_WRITE_MODE = "Cach_Ghi"
 COL_DATA_RANGE = "Vùng lấy dữ liệu"
 COL_MONTH = "Tháng"
 COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"
@@ -87,7 +87,6 @@ def get_creds():
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def safe_api_call(func, *args, **kwargs):
-    """Bọc API Call để chống lỗi 429 Quota Exceeded"""
     max_retries = 5
     for i in range(max_retries):
         try:
@@ -125,7 +124,7 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- [V77] SMART FILTER ENGINE ---
+# --- SMART FILTER ENGINE ---
 def apply_smart_filter_v77(df, filter_str):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
         return df, None
@@ -367,7 +366,7 @@ def write_detailed_log(creds, log_data_list):
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V79): {str(e)}")
+        st.warning(f"Lỗi ghi log (V80): {str(e)}")
 
 # ==========================================
 # 4. CORE ETL
@@ -483,7 +482,6 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
         time.sleep(1)
 
 def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_container):
-    # [V79] Updated to handle Write Mode
     result_map = {} 
     try:
         target_id = extract_id(target_link)
@@ -500,7 +498,6 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             log_container.write(f"✨ Tạo mới sheet: {real_sheet_name}")
         
         df_new_all = pd.DataFrame()
-        # [V79] Unpack write_mode
         for df, src_link, r_idx, w_mode in tasks_list:
             df_new_all = pd.concat([df_new_all, df], ignore_index=True)
         
@@ -523,11 +520,9 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             if col in df_new_all.columns: df_aligned[col] = df_new_all[col]
             else: df_aligned[col] = ""
         
-        # [V79] Logic Xóa (Chỉ áp dụng cho các task Ghi Đè)
         keys_to_delete = set()
         for df, _, _, w_mode in tasks_list:
             if w_mode == "Ghi Đè" and not df.empty:
-                # Lấy key từ dòng đầu tiên (giả định cùng 1 file config thì cùng key)
                 l = str(df[SYS_COL_LINK].iloc[0]).strip()
                 s = str(df[SYS_COL_SHEET].iloc[0]).strip()
                 m = str(df[SYS_COL_MONTH].iloc[0]).strip()
@@ -542,7 +537,14 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
                 log_container.write("✅ Đã xóa.")
         
         log_container.write(f"🚀 Ghi {len(df_aligned)} dòng mới...")
-        start_row = len(safe_api_call(wks.get_all_values)) + 1
+        
+        # [V80 FIX] Tính dòng bắt đầu chính xác và an toàn
+        existing_data = safe_api_call(wks.get_all_values)
+        if existing_data is None: 
+            # Fallback nếu API lỗi (giả định sheet rỗng hoặc lỗi mạng)
+            start_row = 1 
+        else:
+            start_row = len(existing_data) + 1
         
         chunk_size = 5000
         new_vals = df_aligned.fillna('').values.tolist()
@@ -553,9 +555,14 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
         current_cursor = start_row
         for df, src_link, r_idx, w_mode in tasks_list:
             count = len(df)
-            end = current_cursor + count - 1
-            result_map[r_idx] = ("Thành công", f"{current_cursor} - {end}", count)
-            current_cursor += count
+            if count > 0:
+                end = current_cursor + count - 1
+                rng_str = f"{current_cursor} - {end}"
+                current_cursor += count
+            else:
+                rng_str = "0 dòng"
+            
+            result_map[r_idx] = ("Thành công", rng_str, count)
             
         return True, f"Cập nhật {len(df_aligned)} dòng", result_map
 
@@ -645,7 +652,6 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                 for i, r in enumerate(group_rows):
                     lnk = r.get(COL_SRC_LINK, ''); lbl = r.get(COL_SRC_SHEET, '')
                     row_idx = r.get('_index', -1)
-                    # [V79] Get Write Mode
                     w_mode = str(r.get(COL_WRITE_MODE, 'Ghi Đè')).strip()
                     if w_mode not in ["Ghi Đè", "Ghi Nối Tiếp"]: w_mode = "Ghi Đè"
 
@@ -654,7 +660,6 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                     time.sleep(1.5)
                     
                     if df is not None: 
-                        # [V79] Pass write_mode to tasks
                         tasks.append((df, lnk, row_idx, w_mode))
                         total_rows += len(df)
                     else: 
@@ -698,7 +703,6 @@ def load_full_config(_creds):
     if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
     
     df[COL_BLOCK_NAME] = df[COL_BLOCK_NAME].replace('', DEFAULT_BLOCK_NAME).fillna(DEFAULT_BLOCK_NAME)
-    # [V79] Set default Write Mode
     if COL_WRITE_MODE not in df.columns: df[COL_WRITE_MODE] = "Ghi Đè"
     df[COL_WRITE_MODE] = df[COL_WRITE_MODE].fillna("Ghi Đè").replace("", "Ghi Đè")
     
@@ -776,7 +780,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V79 - Write Mode)", help="V79: Add Write Mode"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V80 - Write Fix)", help="V80: Final Stable"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -815,7 +819,6 @@ def main_ui():
                 hrs = [f"{i:02d}:00" for i in range(24)]
                 idx_h = hrs.index(d_val2) if (d_type=="Chạy theo phút" and d_val2 in hrs) else 8
                 n_val2 = st.selectbox("Giờ bắt đầu:", hrs, index=idx_h)
-            
             elif new_type == "Hàng ngày":
                 hours = [f"{i:02d}:00" for i in range(24)]
                 idx = hours.index(d_val1) if (d_type=="Hàng ngày" and d_val1 in hours) else 8
@@ -859,7 +862,6 @@ def main_ui():
     if COL_COPY_FLAG not in curr_df.columns: curr_df.insert(0, COL_COPY_FLAG, False)
     if 'STT' not in curr_df.columns: curr_df.insert(1, 'STT', range(1, len(curr_df)+1))
     
-    # [V79] Add Write Mode to Editor
     edt_df = st.data_editor(
         curr_df,
         column_order=[COL_COPY_FLAG, "STT", COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW],
@@ -877,7 +879,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v79"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v80"
     )
 
     if edt_df[COL_COPY_FLAG].any():
