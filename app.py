@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V81 - Logic Fix)", layout="wide", page_icon="⚙️")
+st.set_page_config(page_title="Kinkin Manager (V82 - Final Logic)", layout="wide", page_icon="🎯")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -124,55 +124,90 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- SMART FILTER ENGINE (V77) ---
-def apply_smart_filter_v77(df, filter_str):
+# --- [V77 + V82] SMART FILTER ENGINE (FINAL STABLE) ---
+def apply_smart_filter_v82(df, filter_str):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
         return df, None
+
+    # Tách điều kiện bằng dấu CHẤM PHẨY (;)
     conditions = str(filter_str).split(';')
+    
     current_df = df.copy()
+    
     for cond in conditions:
         fs = cond.strip()
         if not fs: continue 
+        
         operators = [" contains ", "==", "!=", ">=", "<=", ">", "<", "="]
         selected_op = None
         for op in operators:
             if op in fs: selected_op = op; break
-        if not selected_op: return None, f"Lỗi cú pháp: Không tìm thấy toán tử trong '{fs}'"
+                
+        if not selected_op: 
+            return None, f"Lỗi cú pháp: Không tìm thấy toán tử trong '{fs}'"
+
         parts = fs.split(selected_op, 1)
         user_col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
+        
+        # Tìm cột
         real_col_name = None
-        if user_col in current_df.columns: real_col_name = user_col
+        if user_col in current_df.columns: 
+            real_col_name = user_col
         else:
             for col in current_df.columns:
                 if str(col).strip() == user_col: real_col_name = col; break
-        if not real_col_name: return None, f"Không tìm thấy cột '{user_col}'"
+        
+        if not real_col_name: 
+            return None, f"Không tìm thấy cột '{user_col}'"
+
         user_val = parts[1].strip()
         if (user_val.startswith("'") and user_val.endswith("'")) or (user_val.startswith('"') and user_val.endswith('"')):
             clean_val = user_val[1:-1]
-        else: clean_val = user_val
+        else:
+            clean_val = user_val
+
+        # Thực thi lọc
         try:
             col_series = current_df[real_col_name]
             col_str = col_series.astype(str)
-            if selected_op == " contains ": current_df = current_df[col_str.str.contains(clean_val, case=False, na=False)]
-            elif selected_op in ["=", "=="]: current_df = current_df[col_str == str(clean_val)]
-            elif selected_op == "!=": current_df = current_df[col_str != str(clean_val)]
+
+            if selected_op == " contains ":
+                current_df = current_df[col_str.str.contains(clean_val, case=False, na=False)]
+            
+            elif selected_op in ["=", "=="]:
+                current_df = current_df[col_str == str(clean_val)]
+                
+            elif selected_op == "!=":
+                current_df = current_df[col_str != str(clean_val)]
+                
             else:
+                # So sánh Lớn/Bé (Số hoặc Ngày)
                 is_numeric = False
                 try:
                     numeric_col = pd.to_numeric(col_series, errors='raise')
-                    numeric_val = float(clean_val); is_numeric = True
-                except: is_numeric = False
+                    # Test value
+                    float(clean_val)
+                    is_numeric = True
+                except: 
+                    is_numeric = False
+
                 if is_numeric:
+                    numeric_val = float(clean_val)
                     if selected_op == ">": current_df = current_df[numeric_col > numeric_val]
                     if selected_op == "<": current_df = current_df[numeric_col < numeric_val]
                     if selected_op == ">=": current_df = current_df[numeric_col >= numeric_val]
                     if selected_op == "<=": current_df = current_df[numeric_col <= numeric_val]
                 else:
-                    if selected_op == ">": current_df = current_df[col_str > str(clean_val)]
-                    if selected_op == "<": current_df = current_df[col_str < str(clean_val)]
-                    if selected_op == ">=": current_df = current_df[col_str >= str(clean_val)]
-                    if selected_op == "<=": current_df = current_df[col_str <= str(clean_val)]
-        except Exception as e: return None, f"Lỗi xử lý điều kiện '{fs}': {str(e)}"
+                    # So sánh chuỗi (Date YYYY-MM-DD)
+                    clean_str_val = str(clean_val)
+                    if selected_op == ">": current_df = current_df[col_str > clean_str_val]
+                    if selected_op == "<": current_df = current_df[col_str < clean_str_val]
+                    if selected_op == ">=": current_df = current_df[col_str >= clean_str_val]
+                    if selected_op == "<=": current_df = current_df[col_str <= clean_str_val]
+                
+        except Exception as e:
+            return None, f"Lỗi xử lý điều kiện '{fs}': {str(e)}"
+
     return current_df, None
 
 # --- LOGGING SYSTEM ---
@@ -366,7 +401,7 @@ def write_detailed_log(creds, log_data_list):
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V81): {str(e)}")
+        st.warning(f"Lỗi ghi log (V82): {str(e)}")
 
 # ==========================================
 # 4. CORE ETL
@@ -427,7 +462,8 @@ def fetch_data_v4(row_config, creds, target_headers=None):
             except: pass
 
         if raw_filter:
-            df_filtered, err = apply_smart_filter_v77(df_working, raw_filter)
+            # [V82] Sử dụng hàm Filter V82 (Based on V77)
+            df_filtered, err = apply_smart_filter_v82(df_working, raw_filter)
             if err: return None, sheet_id, f"⚠️ {err}"
             df_working = df_filtered
 
@@ -482,7 +518,7 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
         time.sleep(1)
 
 def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_container):
-    # [V81] LOGIC REFACTOR
+    # [V82] LOGIC REFACTOR & FIX
     result_map = {} 
     try:
         target_id = extract_id(target_link)
@@ -498,14 +534,12 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
             log_container.write(f"✨ Tạo mới sheet: {real_sheet_name}")
         
-        # Merge tất cả dữ liệu
         df_new_all = pd.DataFrame()
         for df, src_link, r_idx, w_mode in tasks_list:
             df_new_all = pd.concat([df_new_all, df], ignore_index=True)
         
         if df_new_all.empty: return True, "No Data", {}
 
-        # Xử lý Header
         existing_headers = safe_api_call(wks.row_values, 1)
         if not existing_headers:
             final_headers = df_new_all.columns.tolist()
@@ -518,13 +552,12 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
                 if col not in updated: updated.append(col); added = True
             if added: wks.update(range_name="A1", values=[updated]); existing_headers = updated; log_container.write("➕ Cập nhật cột hệ thống.")
 
-        # Align Data
         df_aligned = pd.DataFrame()
         for col in existing_headers:
             if col in df_new_all.columns: df_aligned[col] = df_new_all[col]
             else: df_aligned[col] = ""
         
-        # [V81 Logic] Ghi Đè -> Xóa trước
+        # [V82 Logic] Ghi Đè -> Xóa -> Chờ cập nhật
         keys_to_delete = set()
         for df, _, _, w_mode in tasks_list:
             if w_mode == "Ghi Đè" and not df.empty:
@@ -533,25 +566,19 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
                 m = str(df[SYS_COL_MONTH].iloc[0]).strip()
                 keys_to_delete.add((l, s, m))
         
-        deleted_count = 0
         if keys_to_delete:
             log_container.write(f"🔍 Quét dữ liệu cũ (Ghi Đè)...")
             rows_to_del = get_rows_to_delete_dynamic(wks, keys_to_delete, log_container)
             if rows_to_del:
                 log_container.write(f"✂️ Xóa {len(rows_to_del)} dòng cũ...")
                 batch_delete_rows(sh, wks.id, rows_to_del, log_container)
-                log_container.write("✅ Đã xóa xong.")
-                deleted_count = len(rows_to_del)
-                # Đợi một chút để Google cập nhật lại index
-                time.sleep(2)
+                log_container.write("✅ Đã xóa xong. Đang cập nhật index...")
+                time.sleep(3) # [V82] Wait longer for index update
         
-        # [V81 Logic] Tính lại dòng cuối CHÍNH XÁC sau khi xóa
-        # Bắt buộc phải fetch lại data để biết dòng cuối thực sự
+        # [V82 Logic] Lấy Dòng Cuối Mới (Sau khi xóa)
         current_data = safe_api_call(wks.get_all_values)
-        if current_data is None: 
-            start_row = 1 
-        else:
-            start_row = len(current_data) + 1
+        if current_data is None: start_row = 1 
+        else: start_row = len(current_data) + 1
         
         log_container.write(f"🚀 Ghi {len(df_aligned)} dòng mới (từ dòng {start_row})...")
         
@@ -561,7 +588,7 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             safe_api_call(wks.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
             time.sleep(1)
 
-        # Tính toán Log trả về
+        # [V82 Logic] Trả Log chính xác
         current_cursor = start_row
         for df, src_link, r_idx, w_mode in tasks_list:
             count = len(df)
@@ -790,7 +817,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V81 - Logic Fix)", help="V81: Fix Logic"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V82 - Final Logic)", help="V82: Logic Fix"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -889,7 +916,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v81"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v82"
     )
 
     if edt_df[COL_COPY_FLAG].any():
