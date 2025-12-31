@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Tool 2.0", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V79 - Write Mode)", layout="wide", page_icon="📝")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -38,6 +38,7 @@ SHEET_NOTE_NAME = "database_ghi_chu"
 # --- ĐỊNH NGHĨA CỘT ---
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
+COL_WRITE_MODE = "Cach_Ghi" # [V79] Cột Mới
 COL_DATA_RANGE = "Vùng lấy dữ liệu"
 COL_MONTH = "Tháng"
 COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"
@@ -51,7 +52,7 @@ COL_HEADER = "Lay_Header"
 COL_COPY_FLAG = "Copy_Flag" 
 
 REQUIRED_COLS_CONFIG = [
-    COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, 
+    COL_BLOCK_NAME, COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, 
     COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, 
     COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER
 ]
@@ -124,90 +125,55 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- [V77] SMART FILTER ENGINE (MULTI CONDITION ; & DATE) ---
+# --- [V77] SMART FILTER ENGINE ---
 def apply_smart_filter_v77(df, filter_str):
-    # 1. Kiểm tra rỗng
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
         return df, None
-
-    # 2. Tách điều kiện bằng dấu CHẤM PHẨY (;)
     conditions = str(filter_str).split(';')
-    
     current_df = df.copy()
-    
     for cond in conditions:
         fs = cond.strip()
         if not fs: continue 
-        
-        # Danh sách toán tử
         operators = [" contains ", "==", "!=", ">=", "<=", ">", "<", "="]
         selected_op = None
         for op in operators:
             if op in fs: selected_op = op; break
-                
-        if not selected_op: 
-            return None, f"Lỗi cú pháp: Không tìm thấy toán tử trong '{fs}'"
-
+        if not selected_op: return None, f"Lỗi cú pháp: Không tìm thấy toán tử trong '{fs}'"
         parts = fs.split(selected_op, 1)
         user_col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
-        
-        # Tìm cột
         real_col_name = None
-        if user_col in current_df.columns: 
-            real_col_name = user_col
+        if user_col in current_df.columns: real_col_name = user_col
         else:
             for col in current_df.columns:
                 if str(col).strip() == user_col: real_col_name = col; break
-        
-        if not real_col_name: 
-            return None, f"Không tìm thấy cột '{user_col}'"
-
-        # Xử lý giá trị người dùng nhập
+        if not real_col_name: return None, f"Không tìm thấy cột '{user_col}'"
         user_val = parts[1].strip()
         if (user_val.startswith("'") and user_val.endswith("'")) or (user_val.startswith('"') and user_val.endswith('"')):
             clean_val = user_val[1:-1]
-        else:
-            clean_val = user_val
-
-        # --- THỰC THI LỌC ---
+        else: clean_val = user_val
         try:
             col_series = current_df[real_col_name]
             col_str = col_series.astype(str)
-
-            if selected_op == " contains ":
-                current_df = current_df[col_str.str.contains(clean_val, case=False, na=False)]
-            
-            elif selected_op in ["=", "=="]:
-                current_df = current_df[col_str == str(clean_val)]
-                
-            elif selected_op == "!=":
-                current_df = current_df[col_str != str(clean_val)]
-                
+            if selected_op == " contains ": current_df = current_df[col_str.str.contains(clean_val, case=False, na=False)]
+            elif selected_op in ["=", "=="]: current_df = current_df[col_str == str(clean_val)]
+            elif selected_op == "!=": current_df = current_df[col_str != str(clean_val)]
             else:
-                # So sánh Lớn/Bé (Số hoặc Ngày tháng dạng chuỗi)
                 is_numeric = False
                 try:
                     numeric_col = pd.to_numeric(col_series, errors='raise')
-                    numeric_val = float(clean_val)
-                    is_numeric = True
-                except: 
-                    is_numeric = False
-
+                    numeric_val = float(clean_val); is_numeric = True
+                except: is_numeric = False
                 if is_numeric:
                     if selected_op == ">": current_df = current_df[numeric_col > numeric_val]
                     if selected_op == "<": current_df = current_df[numeric_col < numeric_val]
                     if selected_op == ">=": current_df = current_df[numeric_col >= numeric_val]
                     if selected_op == "<=": current_df = current_df[numeric_col <= numeric_val]
                 else:
-                    # So sánh chuỗi (Date)
                     if selected_op == ">": current_df = current_df[col_str > str(clean_val)]
                     if selected_op == "<": current_df = current_df[col_str < str(clean_val)]
                     if selected_op == ">=": current_df = current_df[col_str >= str(clean_val)]
                     if selected_op == "<=": current_df = current_df[col_str <= str(clean_val)]
-                
-        except Exception as e:
-            return None, f"Lỗi xử lý điều kiện '{fs}': {str(e)}"
-
+        except Exception as e: return None, f"Lỗi xử lý điều kiện '{fs}': {str(e)}"
     return current_df, None
 
 # --- LOGGING SYSTEM ---
@@ -401,7 +367,7 @@ def write_detailed_log(creds, log_data_list):
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V78): {str(e)}")
+        st.warning(f"Lỗi ghi log (V79): {str(e)}")
 
 # ==========================================
 # 4. CORE ETL
@@ -411,14 +377,9 @@ def fetch_data_v4(row_config, creds, target_headers=None):
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
     month_val = str(row_config.get(COL_MONTH, ''))
     
-    # 1. Range
     raw_range = str(row_config.get(COL_DATA_RANGE, '')).strip()
-    if raw_range.lower() in ['nan', 'none', 'null', '', 'lấy hết']:
-        data_range_str = "Lấy hết"
-    else:
-        data_range_str = raw_range
+    data_range_str = "Lấy hết" if raw_range.lower() in ['nan', 'none', 'null', '', 'lấy hết'] else raw_range
 
-    # 2. Filter
     raw_filter = str(row_config.get(COL_FILTER, '')).strip()
     if raw_filter.lower() in ['nan', 'none', 'null']: raw_filter = ""
     
@@ -467,7 +428,6 @@ def fetch_data_v4(row_config, creds, target_headers=None):
             except: pass
 
         if raw_filter:
-            # [V77] Sử dụng hàm Filter mới
             df_filtered, err = apply_smart_filter_v77(df_working, raw_filter)
             if err: return None, sheet_id, f"⚠️ {err}"
             df_working = df_filtered
@@ -523,6 +483,7 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
         time.sleep(1)
 
 def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_container):
+    # [V79] Updated to handle Write Mode
     result_map = {} 
     try:
         target_id = extract_id(target_link)
@@ -539,7 +500,8 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             log_container.write(f"✨ Tạo mới sheet: {real_sheet_name}")
         
         df_new_all = pd.DataFrame()
-        for df, src_link, r_idx in tasks_list:
+        # [V79] Unpack write_mode
+        for df, src_link, r_idx, w_mode in tasks_list:
             df_new_all = pd.concat([df_new_all, df], ignore_index=True)
         
         if df_new_all.empty: return True, "No Data", {}
@@ -561,16 +523,23 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             if col in df_new_all.columns: df_aligned[col] = df_new_all[col]
             else: df_aligned[col] = ""
         
-        keys = set()
-        for idx, row in df_new_all.iterrows():
-            keys.add((str(row[SYS_COL_LINK]).strip(), str(row[SYS_COL_SHEET]).strip(), str(row[SYS_COL_MONTH]).strip()))
+        # [V79] Logic Xóa (Chỉ áp dụng cho các task Ghi Đè)
+        keys_to_delete = set()
+        for df, _, _, w_mode in tasks_list:
+            if w_mode == "Ghi Đè" and not df.empty:
+                # Lấy key từ dòng đầu tiên (giả định cùng 1 file config thì cùng key)
+                l = str(df[SYS_COL_LINK].iloc[0]).strip()
+                s = str(df[SYS_COL_SHEET].iloc[0]).strip()
+                m = str(df[SYS_COL_MONTH].iloc[0]).strip()
+                keys_to_delete.add((l, s, m))
         
-        log_container.write("🔍 Quét dữ liệu cũ...")
-        rows_to_del = get_rows_to_delete_dynamic(wks, keys, log_container)
-        if rows_to_del:
-            log_container.write(f"✂️ Xóa {len(rows_to_del)} dòng cũ...")
-            batch_delete_rows(sh, wks.id, rows_to_del, log_container)
-            log_container.write("✅ Đã xóa.")
+        if keys_to_delete:
+            log_container.write(f"🔍 Quét dữ liệu cũ (Ghi Đè)...")
+            rows_to_del = get_rows_to_delete_dynamic(wks, keys_to_delete, log_container)
+            if rows_to_del:
+                log_container.write(f"✂️ Xóa {len(rows_to_del)} dòng cũ...")
+                batch_delete_rows(sh, wks.id, rows_to_del, log_container)
+                log_container.write("✅ Đã xóa.")
         
         log_container.write(f"🚀 Ghi {len(df_aligned)} dòng mới...")
         start_row = len(safe_api_call(wks.get_all_values)) + 1
@@ -582,7 +551,7 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             time.sleep(1)
 
         current_cursor = start_row
-        for df, src_link, r_idx in tasks_list:
+        for df, src_link, r_idx, w_mode in tasks_list:
             count = len(df)
             end = current_cursor + count - 1
             result_map[r_idx] = ("Thành công", f"{current_cursor} - {end}", count)
@@ -600,7 +569,6 @@ def verify_access_fast(url, creds):
     except: return False, "Chặn quyền"
 
 def check_permissions_ui(rows, creds, container, user_id):
-    # [V78] Logic Quét Quyền Thông Minh (Source vs Target)
     log_user_action_buffered(creds, user_id, "Quét Quyền", "Bắt đầu...", force_flush=False)
     
     src_links = set()
@@ -677,12 +645,17 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                 for i, r in enumerate(group_rows):
                     lnk = r.get(COL_SRC_LINK, ''); lbl = r.get(COL_SRC_SHEET, '')
                     row_idx = r.get('_index', -1)
-                    st.write(f"⬇️ Tải: {lnk[-10:]} ({lbl})")
+                    # [V79] Get Write Mode
+                    w_mode = str(r.get(COL_WRITE_MODE, 'Ghi Đè')).strip()
+                    if w_mode not in ["Ghi Đè", "Ghi Nối Tiếp"]: w_mode = "Ghi Đè"
+
+                    st.write(f"⬇️ Tải: {lnk[-10:]} ({lbl}) [{w_mode}]")
                     df, sid, msg = fetch_data_v4(r, creds, target_headers)
                     time.sleep(1.5)
                     
                     if df is not None: 
-                        tasks.append((df, lnk, row_idx))
+                        # [V79] Pass write_mode to tasks
+                        tasks.append((df, lnk, row_idx, w_mode))
                         total_rows += len(df)
                     else: 
                         st.error(f"❌ {msg}")
@@ -725,7 +698,10 @@ def load_full_config(_creds):
     if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
     
     df[COL_BLOCK_NAME] = df[COL_BLOCK_NAME].replace('', DEFAULT_BLOCK_NAME).fillna(DEFAULT_BLOCK_NAME)
-    # [V78] Clean old cols
+    # [V79] Set default Write Mode
+    if COL_WRITE_MODE not in df.columns: df[COL_WRITE_MODE] = "Ghi Đè"
+    df[COL_WRITE_MODE] = df[COL_WRITE_MODE].fillna("Ghi Đè").replace("", "Ghi Đè")
+    
     df[COL_HEADER] = df[COL_HEADER].replace('', 'FALSE').fillna('FALSE')
     if 'STT' in df.columns: df = df.drop(columns=['STT'])
     if 'Che_Do_Ghi' in df.columns: df = df.drop(columns=['Che_Do_Ghi'])
@@ -800,7 +776,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 TOOL 2.0 lấy dữ liệu from GG sheet to GG sheet ", help="V78: Full Features"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V79 - Write Mode)", help="V79: Add Write Mode"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -836,7 +812,6 @@ def main_ui():
             if new_type == "Chạy theo phút":
                 v = int(d_val1) if (d_type == "Chạy theo phút" and d_val1.isdigit()) else 50
                 n_val1 = str(st.slider("Tần suất (Phút):", 30, 180, max(30, v), 10))
-                # [V74] Thêm giờ bắt đầu
                 hrs = [f"{i:02d}:00" for i in range(24)]
                 idx_h = hrs.index(d_val2) if (d_type=="Chạy theo phút" and d_val2 in hrs) else 8
                 n_val2 = st.selectbox("Giờ bắt đầu:", hrs, index=idx_h)
@@ -884,23 +859,25 @@ def main_ui():
     if COL_COPY_FLAG not in curr_df.columns: curr_df.insert(0, COL_COPY_FLAG, False)
     if 'STT' not in curr_df.columns: curr_df.insert(1, 'STT', range(1, len(curr_df)+1))
     
+    # [V79] Add Write Mode to Editor
     edt_df = st.data_editor(
         curr_df,
-        column_order=[COL_COPY_FLAG, "STT", COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW],
+        column_order=[COL_COPY_FLAG, "STT", COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW],
         column_config={
             COL_COPY_FLAG: st.column_config.CheckboxColumn("Copy", width="small", default=False),
             "STT": st.column_config.NumberColumn("STT", width="small", disabled=True),
-            COL_STATUS: st.column_config.SelectboxColumn("Trạng Thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
-            COL_DATA_RANGE: st.column_config.TextColumn("Vùng Lấy Dữ Liệu", width="small", default="Lấy hết"),
-            COL_MONTH: st.column_config.TextColumn("Tháng", width="small"),
-            COL_SRC_LINK: st.column_config.LinkColumn("Link Nguồn Dữ Liệu", width="medium"), 
-            COL_TGT_LINK: st.column_config.LinkColumn("Link Đích Dữ liệu", width="medium"),
-            COL_FILTER: st.column_config.TextColumn("Bộ Lọc", width="medium"),
-            COL_HEADER: st.column_config.CheckboxColumn("Có lấy tiêu đề không?", default=False), 
-            COL_RESULT: st.column_config.TextColumn("Kết Quả", disabled=True),
+            COL_STATUS: st.column_config.SelectboxColumn("Status", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
+            COL_WRITE_MODE: st.column_config.SelectboxColumn("Cách ghi", options=["Ghi Đè", "Ghi Nối Tiếp"], default="Ghi Đè", required=True),
+            COL_DATA_RANGE: st.column_config.TextColumn("Range", width="small", default="Lấy hết"),
+            COL_MONTH: st.column_config.TextColumn("Month", width="small"),
+            COL_SRC_LINK: st.column_config.LinkColumn("Src Link", width="medium"), 
+            COL_TGT_LINK: st.column_config.LinkColumn("Tgt Link", width="medium"),
+            COL_FILTER: st.column_config.TextColumn("Filter", width="medium"),
+            COL_HEADER: st.column_config.CheckboxColumn("Header?", default=False), 
+            COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v78"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v79"
     )
 
     if edt_df[COL_COPY_FLAG].any():
@@ -912,7 +889,6 @@ def main_ui():
         st.rerun()
 
     st.divider()
-    # [V75+V78] Nút chức năng nâng cấp
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("▶️ RUN BLOCK", type="primary", use_container_width=True):
@@ -978,4 +954,3 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
-
