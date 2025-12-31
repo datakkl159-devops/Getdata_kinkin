@@ -25,7 +25,7 @@ AUTHORIZED_USERS = {
     "team_hcm": "Team_HCM"
 }
 
-BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
+BOT_EMAIL_DISPLAY = "botnew@kinkin2.iam.gserviceaccount.com"
 
 # Tên Sheet
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
@@ -957,3 +957,4 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
