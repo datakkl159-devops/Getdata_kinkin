@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V80 - Write Fix)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V81 - Logic Fix)", layout="wide", page_icon="⚙️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -124,7 +124,7 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- SMART FILTER ENGINE ---
+# --- SMART FILTER ENGINE (V77) ---
 def apply_smart_filter_v77(df, filter_str):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
         return df, None
@@ -366,7 +366,7 @@ def write_detailed_log(creds, log_data_list):
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V80): {str(e)}")
+        st.warning(f"Lỗi ghi log (V81): {str(e)}")
 
 # ==========================================
 # 4. CORE ETL
@@ -482,6 +482,7 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
         time.sleep(1)
 
 def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_container):
+    # [V81] LOGIC REFACTOR
     result_map = {} 
     try:
         target_id = extract_id(target_link)
@@ -497,12 +498,14 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
             log_container.write(f"✨ Tạo mới sheet: {real_sheet_name}")
         
+        # Merge tất cả dữ liệu
         df_new_all = pd.DataFrame()
         for df, src_link, r_idx, w_mode in tasks_list:
             df_new_all = pd.concat([df_new_all, df], ignore_index=True)
         
         if df_new_all.empty: return True, "No Data", {}
 
+        # Xử lý Header
         existing_headers = safe_api_call(wks.row_values, 1)
         if not existing_headers:
             final_headers = df_new_all.columns.tolist()
@@ -515,11 +518,13 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
                 if col not in updated: updated.append(col); added = True
             if added: wks.update(range_name="A1", values=[updated]); existing_headers = updated; log_container.write("➕ Cập nhật cột hệ thống.")
 
+        # Align Data
         df_aligned = pd.DataFrame()
         for col in existing_headers:
             if col in df_new_all.columns: df_aligned[col] = df_new_all[col]
             else: df_aligned[col] = ""
         
+        # [V81 Logic] Ghi Đè -> Xóa trước
         keys_to_delete = set()
         for df, _, _, w_mode in tasks_list:
             if w_mode == "Ghi Đè" and not df.empty:
@@ -528,23 +533,27 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
                 m = str(df[SYS_COL_MONTH].iloc[0]).strip()
                 keys_to_delete.add((l, s, m))
         
+        deleted_count = 0
         if keys_to_delete:
             log_container.write(f"🔍 Quét dữ liệu cũ (Ghi Đè)...")
             rows_to_del = get_rows_to_delete_dynamic(wks, keys_to_delete, log_container)
             if rows_to_del:
                 log_container.write(f"✂️ Xóa {len(rows_to_del)} dòng cũ...")
                 batch_delete_rows(sh, wks.id, rows_to_del, log_container)
-                log_container.write("✅ Đã xóa.")
+                log_container.write("✅ Đã xóa xong.")
+                deleted_count = len(rows_to_del)
+                # Đợi một chút để Google cập nhật lại index
+                time.sleep(2)
         
-        log_container.write(f"🚀 Ghi {len(df_aligned)} dòng mới...")
-        
-        # [V80 FIX] Tính dòng bắt đầu chính xác và an toàn
-        existing_data = safe_api_call(wks.get_all_values)
-        if existing_data is None: 
-            # Fallback nếu API lỗi (giả định sheet rỗng hoặc lỗi mạng)
+        # [V81 Logic] Tính lại dòng cuối CHÍNH XÁC sau khi xóa
+        # Bắt buộc phải fetch lại data để biết dòng cuối thực sự
+        current_data = safe_api_call(wks.get_all_values)
+        if current_data is None: 
             start_row = 1 
         else:
-            start_row = len(existing_data) + 1
+            start_row = len(current_data) + 1
+        
+        log_container.write(f"🚀 Ghi {len(df_aligned)} dòng mới (từ dòng {start_row})...")
         
         chunk_size = 5000
         new_vals = df_aligned.fillna('').values.tolist()
@@ -552,6 +561,7 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             safe_api_call(wks.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
             time.sleep(1)
 
+        # Tính toán Log trả về
         current_cursor = start_row
         for df, src_link, r_idx, w_mode in tasks_list:
             count = len(df)
@@ -780,7 +790,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V80 - Write Fix)", help="V80: Final Stable"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V81 - Logic Fix)", help="V81: Fix Logic"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -879,7 +889,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v80"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v81"
     )
 
     if edt_df[COL_COPY_FLAG].any():
