@@ -18,7 +18,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Tool 2.0 (V93 - Fix Header)", layout="wide", page_icon="🔧")
+st.set_page_config(page_title="Kinkin Tool 2.0 (V94 - Sync Data)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -26,7 +26,7 @@ AUTHORIZED_USERS = {
     "team_hcm": "Team_HCM"
 }
 
-BOT_EMAIL_DISPLAY = "botnew@kinkin2.iam.gserviceaccount.com"
+BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 
 # Tên Sheet
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
@@ -36,21 +36,21 @@ SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
 SHEET_NOTE_NAME = "database_ghi_chu"
 
-# --- [V93] ĐỊNH NGHĨA CỘT KHỚP 100% VỚI FILE CỦA BẠN ---
+# --- ĐỊNH NGHĨA CỘT (Chuẩn Tiếng Việt theo file của bạn) ---
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
-COL_WRITE_MODE = "Cach_Ghi"                  # Khớp với file
-COL_DATA_RANGE = "Vùng lấy dữ liệu"          # Khớp với file
+COL_WRITE_MODE = "Cach_Ghi"
+COL_DATA_RANGE = "Vùng lấy dữ liệu"
 COL_MONTH = "Tháng"
-COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"    # Khớp với file
-COL_TGT_LINK = "Link dữ liệu đích"           # Khớp với file
-COL_SRC_SHEET = "Tên sheet nguồn dữ liệu gốc" # Khớp với file
-COL_TGT_SHEET = "Tên sheet dữ liệu đích"      # Khớp với file
-COL_RESULT = "Kết quả"
-COL_LOG_ROW = "Dòng dữ liệu"                 # Khớp với file
-COL_FILTER = "Dieu_Kien_Loc"                 # Khớp với file
-COL_HEADER = "Lay_Header"                    # Khớp với file
-COL_COPY_FLAG = "Copy_Flag"                  
+COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"
+COL_TGT_LINK = "Link dữ liệu đích"
+COL_SRC_SHEET = "Tên sheet nguồn dữ liệu gốc"
+COL_TGT_SHEET = "Tên sheet dữ liệu đích"
+COL_RESULT = "Kết quả"              # Dữ liệu lấy từ cột "Kết quả" trong Sheet
+COL_LOG_ROW = "Dòng dữ liệu"        # Dữ liệu lấy từ cột "Dòng dữ liệu" trong Sheet
+COL_FILTER = "Dieu_Kien_Loc"      
+COL_HEADER = "Lay_Header"         
+COL_COPY_FLAG = "Copy_Flag" 
 
 REQUIRED_COLS_CONFIG = [
     COL_BLOCK_NAME, COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, 
@@ -92,7 +92,6 @@ def get_creds():
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def safe_api_call(func, *args, **kwargs):
-    """Bọc API Call để chống lỗi 429 Quota Exceeded"""
     max_retries = 5
     for i in range(max_retries):
         try:
@@ -419,7 +418,7 @@ def write_detailed_log(creds, log_data_list):
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V93): {str(e)}")
+        st.warning(f"Lỗi ghi log (V94): {str(e)}")
 
 # ==========================================
 # 4. CORE ETL
@@ -739,15 +738,16 @@ def load_full_config(_creds):
     sh = get_sh_with_retry(_creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     ensure_sheet_headers(wks, REQUIRED_COLS_CONFIG)
-    # [V93] Safe load
+    
+    # [V94] Safe load + Clean Data
     df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
     
-    if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
-    else: df = df.dropna(how='all')
-    
-    # Fix old columns if needed
-    if 'Che_Do_Ghi' in df.columns: 
-        if COL_WRITE_MODE not in df.columns: df[COL_WRITE_MODE] = df['Che_Do_Ghi']
+    if df.empty: 
+        return pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
+    else:
+        # Làm sạch dữ liệu rác (nan, None) để bảng hiển thị đẹp
+        df = df.dropna(how='all')
+        df = df.replace(['nan', 'None', 'NaN', '<NA>'], '')
     
     df[COL_BLOCK_NAME] = df[COL_BLOCK_NAME].replace('', DEFAULT_BLOCK_NAME).fillna(DEFAULT_BLOCK_NAME)
     if COL_WRITE_MODE not in df.columns: df[COL_WRITE_MODE] = "Ghi Đè"
@@ -764,9 +764,13 @@ def save_block_config_to_sheet(df_ui, blk_name, creds, uid):
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         
+        # [V94] Safe + Clean load
         df_svr = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
-        if df_svr.empty: df_svr = pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
-        else: df_svr = df_svr.dropna(how='all')
+        if df_svr.empty: 
+            df_svr = pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
+        else: 
+            df_svr = df_svr.dropna(how='all')
+            df_svr = df_svr.replace(['nan', 'None', 'NaN'], '')
 
         if COL_BLOCK_NAME not in df_svr.columns: df_svr[COL_BLOCK_NAME] = DEFAULT_BLOCK_NAME
         
@@ -834,7 +838,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin Tool 2.0 (V93 - Fix Header)", help="V93: Match Headers"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin Tool 2.0 (V94 - Sync Data)", help="V94: Clean & Sync"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -917,7 +921,7 @@ def main_ui():
     if COL_COPY_FLAG not in curr_df.columns: curr_df.insert(0, COL_COPY_FLAG, False)
     if 'STT' not in curr_df.columns: curr_df.insert(1, 'STT', range(1, len(curr_df)+1))
     
-    # [V93] Map columns to Vietnamese
+    # [V94] Đảm bảo hiển thị đúng cột từ Sheet
     edt_df = st.data_editor(
         curr_df,
         column_order=[COL_COPY_FLAG, "STT", COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW],
@@ -935,7 +939,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Kết quả", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v93"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v94"
     )
 
     if edt_df[COL_COPY_FLAG].any():
@@ -1012,4 +1016,3 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
-
