@@ -1,43 +1,44 @@
-name: Auto Run Kinkin Job
+name: Auto Run Data Pipeline
 
 on:
   schedule:
-    # Chạy mỗi 10 phút (Khớp với logic Lookback 12 phút trong code Python)
-    - cron: '*/20 * * * *' 
-  
-  # Cho phép bấm nút "Run workflow" thủ công để test ngay lập tức
-  workflow_dispatch: 
+    # -----------------------------------------------------------
+    # Ý NGHĨA DÒNG CRON '*/30 * * * *':
+    # - Bật máy vào phút thứ 0 và phút thứ 30 của MỌI GIỜ.
+    # - Ví dụ: 9:00, 9:30, 10:00, 10:30... liên tục cả ngày.
+    # -----------------------------------------------------------
+    - cron: '*/30 * * * *'
+    
+  # Cho phép bấm nút chạy tay để test khi cần
+  workflow_dispatch:
 
 jobs:
-  run-auto-job:
+  build:
     runs-on: ubuntu-latest
-    
-    # Giới hạn thời gian chạy tối đa 15 phút để tránh treo process
-    timeout-minutes: 15
-
     steps:
-      # 1. Tải code từ kho về máy ảo
-      - name: Checkout repository code
-        uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v2
 
-      # 2. Cài đặt Python 3.9 (Ổn định nhất với các thư viện hiện tại)
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v2
         with:
           python-version: '3.9'
-          cache: 'pip' # Cache lại thư viện để các lần sau chạy nhanh hơn
+          cache: 'pip' # Giúp cài đặt nhanh hơn để tiết kiệm thời gian
 
-      # 3. Cài đặt các thư viện cần thiết từ requirements.txt
-      - name: Install Dependencies
+      - name: Install dependencies
+        # Cài các thư viện cần thiết cho automation.py
         run: |
-          pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pandas gspread oauth2client gspread-dataframe google-auth
 
-      # 4. Chạy file auto_job.py với các biến môi trường bảo mật
-      - name: Execute Auto Job
+      - name: Run Automation Script
         env:
-          # Lấy thông tin từ GitHub Secrets
+          # Nạp danh sách các Bot từ Secrets
           GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-          HISTORY_SHEET_ID: ${{ secrets.HISTORY_SHEET_ID }}
-        run: |
-          python auto_job.py
+          GCP_SERVICE_ACCOUNT_1: ${{ secrets.GCP_SERVICE_ACCOUNT_1 }}
+          GCP_SERVICE_ACCOUNT_2: ${{ secrets.GCP_SERVICE_ACCOUNT_2 }}
+          
+          # ID của file Google Sheet cấu hình
+          CONFIG_SHEET_ID: ${{ secrets.CONFIG_SHEET_ID }}
+        
+        # Chạy file Python V98 (Automation tách biệt State)
+        run: python automation.py
