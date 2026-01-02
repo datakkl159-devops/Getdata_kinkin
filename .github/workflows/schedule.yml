@@ -1,17 +1,17 @@
-name: Kinkin Auto Runner V108
+name: Kinkin Auto Runner (Public Safe)
 
 on:
   schedule:
-    # Chạy vào phút thứ 0 và 30 của mỗi giờ (Ví dụ: 8:00, 8:30, 9:00...)
-    - cron: '0,30 * * * *'
-  workflow_dispatch: # Cho phép bấm nút "Run workflow" thủ công để test
+    # Chạy vào phút thứ 5 và 35 mỗi giờ (để tránh giờ cao điểm :00)
+    - cron: '5,35 * * * *'
+  workflow_dispatch: # Cho phép bấm nút chạy tay để test
 
 jobs:
   run_data_pipeline:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v3
 
       - name: Set up Python
@@ -19,13 +19,13 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
           pip install pandas gspread oauth2client gspread-dataframe
 
-      - name: Run Auto Job Script
+      - name: Run Auto Job
         env:
-          # Nạp Key từ GitHub Secrets vào biến môi trường
+          # Nạp Key từ GitHub Secrets vào biến môi trường (Tuyệt đối an toàn)
           GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
           GCP_SERVICE_ACCOUNT_1: ${{ secrets.GCP_SERVICE_ACCOUNT_1 }}
           GCP_SERVICE_ACCOUNT_2: ${{ secrets.GCP_SERVICE_ACCOUNT_2 }}
