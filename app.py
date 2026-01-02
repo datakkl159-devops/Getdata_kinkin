@@ -18,7 +18,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Tool 2.0 (V92 - Tiếng Việt)", layout="wide", page_icon="🇻🇳")
+st.set_page_config(page_title="Kinkin Tool 2.0 (V93 - Fix Header)", layout="wide", page_icon="🔧")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -36,21 +36,21 @@ SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
 SHEET_NOTE_NAME = "database_ghi_chu"
 
-# --- [V92] ĐỊNH NGHĨA CỘT TIẾNG VIỆT ---
+# --- [V93] ĐỊNH NGHĨA CỘT KHỚP 100% VỚI FILE CỦA BẠN ---
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
-COL_WRITE_MODE = "Cách ghi"          # Đã sửa thành tiếng Việt
-COL_DATA_RANGE = "Vùng lấy"          # Đã sửa
+COL_WRITE_MODE = "Cach_Ghi"                  # Khớp với file
+COL_DATA_RANGE = "Vùng lấy dữ liệu"          # Khớp với file
 COL_MONTH = "Tháng"
-COL_SRC_LINK = "Link nguồn"          # Đã sửa
-COL_TGT_LINK = "Link đích"           # Đã sửa
-COL_SRC_SHEET = "Sheet nguồn"        # Đã sửa
-COL_TGT_SHEET = "Sheet đích"         # Đã sửa
+COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"    # Khớp với file
+COL_TGT_LINK = "Link dữ liệu đích"           # Khớp với file
+COL_SRC_SHEET = "Tên sheet nguồn dữ liệu gốc" # Khớp với file
+COL_TGT_SHEET = "Tên sheet dữ liệu đích"      # Khớp với file
 COL_RESULT = "Kết quả"
-COL_LOG_ROW = "Log Row"
-COL_FILTER = "Điều kiện lọc"         # Đã sửa
-COL_HEADER = "Lấy Header?"           # Đã sửa
-COL_COPY_FLAG = "Copy"               # Đã sửa
+COL_LOG_ROW = "Dòng dữ liệu"                 # Khớp với file
+COL_FILTER = "Dieu_Kien_Loc"                 # Khớp với file
+COL_HEADER = "Lay_Header"                    # Khớp với file
+COL_COPY_FLAG = "Copy_Flag"                  
 
 REQUIRED_COLS_CONFIG = [
     COL_BLOCK_NAME, COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, 
@@ -67,7 +67,7 @@ REQUIRED_COLS_SCHED = [SCHED_COL_BLOCK, SCHED_COL_TYPE, SCHED_COL_VAL1, SCHED_CO
 NOTE_COL_ID = "ID"; NOTE_COL_BLOCK = "Tên Khối"; NOTE_COL_CONTENT = "Nội dung Note"
 REQUIRED_COLS_NOTE = [NOTE_COL_ID, NOTE_COL_BLOCK, NOTE_COL_CONTENT]
 
-# Cột hệ thống trong Sheet Đích (Không nên đổi tiếng Việt có dấu để tránh lỗi code bên dưới)
+# Cột hệ thống ẩn trong Sheet Đích
 SYS_COL_LINK = "Src_Link"
 SYS_COL_SHEET = "Src_Sheet"
 SYS_COL_MONTH = "Month"
@@ -92,6 +92,7 @@ def get_creds():
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def safe_api_call(func, *args, **kwargs):
+    """Bọc API Call để chống lỗi 429 Quota Exceeded"""
     max_retries = 5
     for i in range(max_retries):
         try:
@@ -148,8 +149,8 @@ def show_guide_popup():
     * **Ghi Nối Tiếp:** Giữ nguyên cũ, ghi tiếp xuống dưới đáy.
     """)
 
-# --- SMART FILTER ENGINE ---
-def apply_smart_filter_v92(df, filter_str, debug_container=None):
+# --- SMART FILTER ENGINE (V90) ---
+def apply_smart_filter_v90(df, filter_str, debug_container=None):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
         return df, None
     conditions = str(filter_str).split(';')
@@ -418,13 +419,12 @@ def write_detailed_log(creds, log_data_list):
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V92): {str(e)}")
+        st.warning(f"Lỗi ghi log (V93): {str(e)}")
 
 # ==========================================
 # 4. CORE ETL
 # ==========================================
 def fetch_data_v4(row_config, creds, target_headers=None, status_container=None):
-    # [V92] Mapping Column Names from Vietnamese to Code Logic
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
     month_val = str(row_config.get(COL_MONTH, ''))
@@ -480,7 +480,7 @@ def fetch_data_v4(row_config, creds, target_headers=None, status_container=None)
             except: pass
 
         if raw_filter:
-            df_filtered, err = apply_smart_filter_v92(df_working, raw_filter, debug_container=status_container)
+            df_filtered, err = apply_smart_filter_v90(df_working, raw_filter, debug_container=status_container)
             if err: return None, sheet_id, f"⚠️ {err}"
             df_working = df_filtered
 
@@ -492,7 +492,6 @@ def fetch_data_v4(row_config, creds, target_headers=None, status_container=None)
 
         df_final = df_final.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
         
-        # Cột hệ thống giữ nguyên tên tiếng Anh cho an toàn logic
         df_final[SYS_COL_LINK] = link_src.strip()
         df_final[SYS_COL_SHEET] = source_label.strip()
         df_final[SYS_COL_MONTH] = month_val.strip()
@@ -740,11 +739,15 @@ def load_full_config(_creds):
     sh = get_sh_with_retry(_creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     ensure_sheet_headers(wks, REQUIRED_COLS_CONFIG)
-    # [V92] Safe
+    # [V93] Safe load
     df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
     
     if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
     else: df = df.dropna(how='all')
+    
+    # Fix old columns if needed
+    if 'Che_Do_Ghi' in df.columns: 
+        if COL_WRITE_MODE not in df.columns: df[COL_WRITE_MODE] = df['Che_Do_Ghi']
     
     df[COL_BLOCK_NAME] = df[COL_BLOCK_NAME].replace('', DEFAULT_BLOCK_NAME).fillna(DEFAULT_BLOCK_NAME)
     if COL_WRITE_MODE not in df.columns: df[COL_WRITE_MODE] = "Ghi Đè"
@@ -798,7 +801,6 @@ def rename_block_action(old, new, creds, uid):
     if not acquire_lock(creds, uid): return False
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # [V92] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df.loc[df[COL_BLOCK_NAME] == old, COL_BLOCK_NAME] = new
         wks.clear(); 
@@ -811,7 +813,6 @@ def delete_block_direct(blk, creds, uid):
     if not acquire_lock(creds, uid): return
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # [V92] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
         df_new = df[df[COL_BLOCK_NAME] != blk]
         wks.clear(); 
@@ -833,7 +834,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin Tool 2.0 (V92 - Tiếng Việt)", help="V92: Vietnamese Headers"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin Tool 2.0 (V93 - Fix Header)", help="V93: Match Headers"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -916,6 +917,7 @@ def main_ui():
     if COL_COPY_FLAG not in curr_df.columns: curr_df.insert(0, COL_COPY_FLAG, False)
     if 'STT' not in curr_df.columns: curr_df.insert(1, 'STT', range(1, len(curr_df)+1))
     
+    # [V93] Map columns to Vietnamese
     edt_df = st.data_editor(
         curr_df,
         column_order=[COL_COPY_FLAG, "STT", COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW],
@@ -933,7 +935,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Kết quả", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v92"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v93"
     )
 
     if edt_df[COL_COPY_FLAG].any():
