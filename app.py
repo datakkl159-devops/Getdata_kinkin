@@ -529,19 +529,49 @@ def verify_access_fast(url, creds):
     try: get_sh_with_retry(creds, sid); return True, "OK"
     except: return False, "Chặn"
 
-def check_permissions_ui(rows, creds, cont, uid):
-    src, tgt = set(), set()
+def check_permissions_ui(rows, creds, container, user_id):
+    log_user_action_buffered(creds, user_id, "Quét Quyền", "Bắt đầu...", force_flush=False)
+    
+    # 1. Phân loại Link Nguồn và Link Đích vào 2 nhóm riêng
+    src_links = set(); tgt_links = set()
     for r in rows:
-        if "docs" in str(r.get(COL_SRC_LINK)): src.add(str(r.get(COL_SRC_LINK)))
-        if "docs" in str(r.get(COL_TGT_LINK)): tgt.add(str(r.get(COL_TGT_LINK)))
-    all_l = list(src.union(tgt))
-    if not all_l: cont.info("No links"); return
-    err = 0; prog = cont.progress(0)
-    for i, l in enumerate(all_l):
-        prog.progress((i+1)/len(all_l))
-        ok, m = verify_access_fast(l, creds)
-        if not ok: cont.error(f"❌ {l}"); err+=1
-    if err==0: cont.success("✅ OK")
+        if "docs.google.com" in str(r.get(COL_SRC_LINK, '')): 
+            src_links.add(str(r.get(COL_SRC_LINK, '')).strip())
+        if "docs.google.com" in str(r.get(COL_TGT_LINK, '')): 
+            tgt_links.add(str(r.get(COL_TGT_LINK, '')).strip())
+    
+    all_unique_links = list(src_links.union(tgt_links))
+    total = len(all_unique_links)
+    
+    if total == 0: 
+        container.info("Không tìm thấy link Google Sheet nào."); return
+    
+    prog = container.progress(0); err_count = 0
+    
+    # 2. Kiểm tra từng link
+    for i, link in enumerate(all_unique_links):
+        prog.progress((i + 1) / total); time.sleep(0.1)
+        ok, msg = verify_access_fast(link, creds)
+        
+        if not ok:
+            err_count += 1; error_msgs = []
+            
+            # --- [ĐÂY LÀ PHẦN QUAN TRỌNG ĐÃ ĐƯỢC SỬA] ---
+            # Kiểm tra xem link lỗi này thuộc nhóm nào để báo câu tương ứng
+            if link in src_links: 
+                error_msgs.append("Link Nguồn: Cần quyền XEM")
+            if link in tgt_links: 
+                error_msgs.append("Link Đích: Cần quyền SỬA")
+            # ---------------------------------------------
+            
+            container.error(f"❌ {link}\n👉 {' & '.join(error_msgs)}")
+    
+    if err_count == 0: 
+        container.success("✅ Tuyệt vời! Bot đã có đủ quyền.")
+    else: 
+        container.warning(f"⚠️ Phát hiện {err_count} link thiếu quyền. Vui lòng kiểm tra!")
+    
+    log_user_action_buffered(creds, user_id, "Quét Quyền", f"Lỗi: {err_count}", force_flush=True)
 
 def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_container, forced_bot=None):
     master_creds = get_master_creds()
@@ -889,4 +919,5 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
