@@ -1,44 +1,35 @@
-name: Auto Run Data Pipeline
+name: Kinkin Auto Runner V108
 
 on:
   schedule:
-    # -----------------------------------------------------------
-    # Ý NGHĨA DÒNG CRON '*/30 * * * *':
-    # - Bật máy vào phút thứ 0 và phút thứ 30 của MỌI GIỜ.
-    # - Ví dụ: 9:00, 9:30, 10:00, 10:30... liên tục cả ngày.
-    # -----------------------------------------------------------
-    - cron: '*/30 * * * *'
-    
-  # Cho phép bấm nút chạy tay để test khi cần
-  workflow_dispatch:
+    # Chạy vào phút thứ 0 và 30 của mỗi giờ (Ví dụ: 8:00, 8:30, 9:00...)
+    - cron: '0,30 * * * *'
+  workflow_dispatch: # Cho phép bấm nút "Run workflow" thủ công để test
 
 jobs:
-  build:
+  run_data_pipeline:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Setup Python
-        uses: actions/setup-python@v2
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-          cache: 'pip' # Giúp cài đặt nhanh hơn để tiết kiệm thời gian
 
       - name: Install dependencies
-        # Cài các thư viện cần thiết cho automation.py
         run: |
-          pip install pandas gspread oauth2client gspread-dataframe google-auth
+          pip install pandas gspread oauth2client gspread-dataframe
 
-      - name: Run Automation Script
+      - name: Run Auto Job Script
         env:
-          # Nạp danh sách các Bot từ Secrets
+          # Nạp Key từ GitHub Secrets vào biến môi trường
           GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
           GCP_SERVICE_ACCOUNT_1: ${{ secrets.GCP_SERVICE_ACCOUNT_1 }}
           GCP_SERVICE_ACCOUNT_2: ${{ secrets.GCP_SERVICE_ACCOUNT_2 }}
-          
-          # ID của file Google Sheet cấu hình
-          CONFIG_SHEET_ID: ${{ secrets.CONFIG_SHEET_ID }}
-        
-        # Chạy file Python V98 (Automation tách biệt State)
-        run: python automation.py
+          GCP_SERVICE_ACCOUNT_3: ${{ secrets.GCP_SERVICE_ACCOUNT_3 }}
+          GCP_SERVICE_ACCOUNT_4: ${{ secrets.GCP_SERVICE_ACCOUNT_4 }}
+          HISTORY_SHEET_ID: ${{ secrets.HISTORY_SHEET_ID }}
+        run: python auto_job.py
