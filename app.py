@@ -990,14 +990,9 @@ def main_ui():
     logs = fetch_activity_logs(master_creds, 50)
     if not logs.empty: st.dataframe(logs, use_container_width=True, hide_index=True)
 
-    flush_logs(master_creds, force=True)
-    st.divider(); st.caption("Logs")
-    if st.button("Refresh Logs"): st.cache_data.clear()
-    logs = fetch_activity_logs(master_creds, 50)
-    if not logs.empty: st.dataframe(logs, use_container_width=True, hide_index=True)
-
 if __name__ == "__main__":
     main_ui()
+
 
 
 
