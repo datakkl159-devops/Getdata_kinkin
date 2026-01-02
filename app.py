@@ -18,15 +18,15 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Tool 2.0 (V108 - Perf & Feat)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Kinkin Tool 2.0 (V108.3 - Full Guide)", layout="wide", page_icon="📘")
 
 # 🟢 DANH SÁCH 5 BOT (User điền)
 MY_BOT_LIST = [
     "kinkingetdulieu1@kinkin1.iam.gserviceaccount.com", # Bot 1
     "botnew@kinkin2.iam.gserviceaccount.com",          # Bot 2
     "kinkingetdulieu3@kinkin3.iam.gserviceaccount.com", # Bot 3
-    "kinkingetdulieu4@kinkin4.iam.gserviceaccount.com",                            # Bot 4
-    "kinkingetdulieu5@kinkin5.iam.gserviceaccount.com"                             # Bot 5
+    "kinkingetdulieu4@kinkin4.iam.gserviceaccount.com", # Bot 4
+    "kinkingetdulieu5@kinkin5.iam.gserviceaccount.com"  # Bot 5
 ]
 
 AUTHORIZED_USERS = {
@@ -172,8 +172,12 @@ def acquire_lock(creds, user_id):
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         try: wks = sh.worksheet(SHEET_LOCK_NAME)
         except: wks = sh.add_worksheet(SHEET_LOCK_NAME, 10, 5); wks.update([["FALSE", "", ""]])
-        val = wks.cell(2, 1).value; user = wks.cell(2, 2).value
-        if val == "TRUE" and user != user_id: return False
+        val = wks.cell(2, 1).value; user = wks.cell(2, 2).value; time_str = wks.cell(2, 3).value
+        if val == "TRUE":
+            try:
+                if (datetime.now() - datetime.strptime(time_str, "%d/%m/%Y %H:%M:%S")).total_seconds() > 300: return False
+            except: pass
+            return True if user == user_id else False
         wks.update("A2:C2", [["TRUE", user_id, datetime.now().strftime("%d/%m/%Y %H:%M:%S")]])
         return True
     except: return False
@@ -217,6 +221,100 @@ def show_note_popup(creds, all_blocks, user_id):
         }, key="note_popup")
     if st.button("💾 Lưu Note", type="primary"):
         if save_notes_data(edt, creds, user_id, "All"): st.success("Đã lưu!"); time.sleep(1); st.rerun()
+
+# --- [V108.3] CẢI TIẾN HƯỚNG DẪN SỬ DỤNG (CHI TIẾT & CHUẨN XÁC) ---
+@st.dialog("📘 CẨM NANG HƯỚNG DẪN SỬ DỤNG HỆ THỐNG", width="large")
+def show_guide_popup():
+    st.markdown("""
+    Chào mừng bạn! Nếu đây là lần đầu bạn sử dụng Kinkin Tool, đừng lo lắng. Hãy đọc kỹ các bước dưới đây để vận hành trơn tru nhé.
+
+    ### 1. Tool này dùng để làm gì?
+    Đơn giản là: Bạn có nhiều file Google Sheet nằm rải rác (File Nguồn). Bạn muốn gom dữ liệu từ các file đó về một file tổng (File Đích). Tool này sẽ làm việc đó thay bạn hoàn toàn tự động.
+    
+    * **🤖 Bot làm việc thế nào?** Hệ thống có 5 con Bot. Khi bạn đặt tên cho một "Khối" công việc, hệ thống sẽ tự động chỉ định 1 con Bot riêng để phục vụ Khối đó (Ví dụ: Khối "Kế toán" luôn do Bot 1 làm, Khối "Nhân sự" luôn do Bot 2 làm). Điều này giúp công việc không bị chồng chéo.
+
+    ---
+    ### 2. Quy Trình 4 Bước Đơn Giản
+    
+    #### 🟢 Bước 1: Điền thông tin vào bảng
+    Chọn một Khối ở menu bên trái, bảng cấu hình sẽ hiện ra. Bạn cần điền các cột sau:
+    
+    | Tên Cột | Giải thích bình dân | Ví dụ điền |
+    | :--- | :--- | :--- |
+    | **Trạng thái** | Phải chọn **"Chưa chốt..."** thì dòng này mới được chạy. Nếu chọn "Đã chốt", Tool sẽ bỏ qua. | `Chưa chốt...` |
+    | **Cách ghi** | • **Ghi Đè:** Xóa cái cũ (của link nguồn này) đi, viết cái mới vào.<br>• **Ghi Nối Tiếp:** Cái cũ giữ nguyên, viết thêm cái mới xuống dưới đáy. | `Ghi Đè` |
+    | **Vùng lấy** | Bạn muốn lấy dữ liệu từ cột nào đến cột nào? | `A:Z` (Lấy hết bảng)<br>`A:E` (Chỉ lấy cột A đến E) |
+    | **Link nguồn** | Địa chỉ web của file chứa dữ liệu gốc. | `https://docs.google...` |
+    | **Tên sheet** | Tên cái tab nhỏ bên dưới file Excel/Sheet mà bạn muốn lấy. | `Sheet1` hoặc `Data_Thang_3` |
+    | **Điều kiện lọc** | *(Xem hướng dẫn chi tiết mục 3 bên dưới)* | `Doanh_thu > 0` |
+    | **Lấy Header** | Tick ✅ nếu dòng 1 của file nguồn là tiêu đề cột và bạn muốn lấy nó. | ✅ |
+
+    #### 🔐 Bước 2: Mở cửa cho Bot (Cấp quyền)
+    Bot cũng giống người, muốn vào nhà (file) thì phải được mở cửa.
+    1.  Nhìn lên góc trên bên phải màn hình, mục **🤖 Bot phụ trách**, copy địa chỉ Email ở đó.
+    2.  Vào **File Nguồn** -> Nút Share -> Dán email Bot -> Chọn quyền **Viewer (Người xem)**.
+    3.  Vào **File Đích** -> Nút Share -> Dán email Bot -> Chọn quyền **Editor (Người chỉnh sửa)**.
+    
+    #### 🚀 Bước 3: Bấm nút chạy
+    * Bấm **`💾 Save Config`** để lưu lại những gì vừa điền.
+    * Bấm **`▶️ RUN BLOCK`** để chạy thử. Tool sẽ tự động quét và báo lỗi nếu quên cấp quyền.
+
+    #### 🔄 Bước 4: Xem kết quả (Quan trọng)
+    * Chạy xong, bảng sẽ hiện chữ "Thành công" ở cột Kết quả.
+    * **Lưu ý:** Nếu bạn thấy bảng chưa hiện số dòng mới, hãy bấm nút **`🔄 Reload`** màu trắng ở menu bên trái để làm mới màn hình.
+
+    ---
+    ### 3. Bí Kíp Điền "Điều Kiện Lọc" (Filter)
+    Dùng để chỉ lấy những dòng dữ liệu bạn cần. 
+    **Cấu trúc:** `[Tên Cột] [Toán tử] [Giá trị]`
+
+    #### 📐 Các toán tử hỗ trợ:
+    | Toán tử | Ý nghĩa | Ví dụ |
+    | :--- | :--- | :--- |
+    | `==` | Bằng chính xác | `Bo_phan == 'IT'` |
+    | `!=` | Khác (Không bằng) | `Trang_thai != 'Hủy'` |
+    | `>` | Lớn hơn | `Doanh_thu > 500000` |
+    | `<` | Nhỏ hơn | `So_luong < 10` |
+    | `>=` | Lớn hơn hoặc bằng | `Diem >= 5` |
+    | `<=` | Nhỏ hơn hoặc bằng | `Tuoi <= 18` |
+    | `contains` | Chứa từ khóa | `Dia_chi contains 'Hà Nội'` |
+
+    #### 💡 Ví dụ cho từng loại dữ liệu:
+    * **1. Lọc Số (Viết số bình thường):**
+        * Lấy doanh thu lớn hơn 1 triệu: `Doanh_thu > 1000000`
+        * Lấy số lượng bằng 0: `So_luong == 0`
+    
+    * **2. Lọc Chữ/Văn bản (Phải để trong dấu nháy đơn ' '):**
+        * Lấy nhân viên tên Lan: `Ten == 'Lan'`
+        * Lấy những người họ Nguyễn (chứa chữ Nguyễn): `Ho_Ten contains 'Nguyễn'`
+        * Lọc trạng thái khác Hủy: `Trang_thai != 'Hủy'`
+
+    * **3. Lọc Ngày tháng (Phải để trong dấu nháy đơn ' '):**
+        * Lấy đơn hàng sau ngày 01/01/2025: `Ngay_dat > '01/01/2025'`
+        * Lấy đúng ngày sinh nhật: `Ngay_sinh == '15/08/1990'`
+
+    ---
+    ### 4. Logic Điền Dữ Liệu (Khi vào File Đích)
+    Đây là cách Tool xử lý khi đổ dữ liệu vào File Đích của bạn:
+
+    #### 🆕 Trường hợp 1: File Đích là file trắng (Chưa có gì)
+    * Tool sẽ tự động tạo dòng tiêu đề (Header) dựa trên File Nguồn.
+    * Dữ liệu được điền bình thường.
+
+    #### 🔁 Trường hợp 2: File Đích ĐÃ CÓ dữ liệu cũ
+    Tool sẽ tôn trọng cấu trúc của File Đích hiện tại.
+    * **Nếu Tiêu Đề TRÙNG KHỚP:** Quá tuyệt! Dữ liệu sẽ được điền thẳng hàng, thẳng lối.
+    * **Nếu Tiêu Đề KHÁC NHAU:**
+        * ⛔ **Tool sẽ KHÔNG chạy về dữ liệu.**
+        * *Lời khuyên:* Hãy đảm bảo tên cột (dòng 1) ở File Nguồn và File Đích phải giống hệt nhau để tránh lỗi lệch cột.
+
+    #### 🛡️ Cột Hệ Thống
+    Để giúp bạn quản lý, Tool luôn tự động thêm 4 cột này vào cuối file đích:
+    1.  `Src_Link`: Dữ liệu này lấy từ link nào?
+    2.  `Src_Sheet`: Lấy từ sheet nào?
+    3.  `Month`: Dữ liệu của tháng mấy?
+    4.  `Thời điểm ghi`: Dữ liệu này được Bot cập nhật vào giờ nào, ngày nào?
+    """)
 
 def load_scheduler_config(creds):
     try:
@@ -745,11 +843,11 @@ def main_ui():
         
         st.divider()
         if st.button("📝 Note", use_container_width=True): show_note_popup(master_creds, blks, uid)
-        if st.button("📚 HDSD", use_container_width=True): st.info("1 Block = 1 Bot. Hệ thống tự động phân tải.")
+        if st.button("📚 HDSD", use_container_width=True): show_guide_popup()
 
     assigned_bot = assign_bot_to_block(sel_blk)
     c_head_1, c_head_2 = st.columns([3, 1.5])
-    with c_head_1: st.title("💎 Kinkin Tool 2.0 (V108)"); st.caption(f"User: {uid}")
+    with c_head_1: st.title("💎 Kinkin Tool 2.0 (V108.3)"); st.caption(f"User: {uid}")
     with c_head_2: st.info(f"🤖 **Bot phụ trách:**"); st.code(assigned_bot, language="text")
 
     # --- MAIN EDITOR ---
@@ -867,4 +965,3 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
-
