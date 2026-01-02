@@ -22,11 +22,11 @@ st.set_page_config(page_title="Kinkin Tool 2.0 (V105 - Bot Email Tracking)", lay
 
 # 🟢 DANH SÁCH 5 BOT (Code sẽ tự chia khối cho danh sách này)
 MY_BOT_LIST = [
-    "getdulieu@kin-kin-477902.iam.gserviceaccount.com", # Bot 1
+    "kinkingetdulieu1@kinkin1.iam.gserviceaccount.com", # Bot 1
     "botnew@kinkin2.iam.gserviceaccount.com",          # Bot 2
     "kinkingetdulieu3@kinkin3.iam.gserviceaccount.com", # Bot 3
-    "email_bot_4@gmail.com",                            # Bot 4
-    "email_bot_5@gmail.com"                             # Bot 5
+    "kinkingetdulieu4@kinkin4.iam.gserviceaccount.com",                            # Bot 4
+    "kinkingetdulieu5@kinkin5.iam.gserviceaccount.com"                             # Bot 5
 ]
 
 AUTHORIZED_USERS = {
@@ -889,3 +889,4 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
