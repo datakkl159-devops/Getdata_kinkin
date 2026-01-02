@@ -3,135 +3,171 @@ import gspread
 import json
 import os
 import time
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
+import pytz
 from google.oauth2 import service_account
-from gspread_dataframe import get_as_dataframe, set_with_dataframe
+from gspread_dataframe import get_as_dataframe
 
 # --- CẤU HÌNH ---
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 SHEET_CONFIG_NAME = "luu_cau_hinh"
 SHEET_LOG_NAME = "log_lanthucthi"
-# Lấy ID Sheet từ Secret, nếu không có thì báo lỗi ngay
+SHEET_SYS_CONFIG = "sys_config"
 SHEET_ID = os.environ.get("HISTORY_SHEET_ID")
+TZ_VN = pytz.timezone('Asia/Ho_Chi_Minh') # Múi giờ Việt Nam
 
-# Danh sách Email Bot khớp với thứ tự Secret đã cài
 MY_BOT_LIST = [
-    "kinkingetdulieu1@kinkin1.iam.gserviceaccount.com", # Ứng với GCP_SERVICE_ACCOUNT
-    "botnew@kinkin2.iam.gserviceaccount.com",          # Ứng với GCP_SERVICE_ACCOUNT_1
-    "kinkingetdulieu3@kinkin3.iam.gserviceaccount.com", # Ứng với GCP_SERVICE_ACCOUNT_2
-    "kinkingetdulieu4@kinkin4.iam.gserviceaccount.com", # Ứng với GCP_SERVICE_ACCOUNT_3
-    "kinkingetdulieu5@kinkin5.iam.gserviceaccount.com"  # Ứng với GCP_SERVICE_ACCOUNT_4
+    "kinkingetdulieu1@kinkin1.iam.gserviceaccount.com",
+    "botnew@kinkin2.iam.gserviceaccount.com",
+    "kinkingetdulieu3@kinkin3.iam.gserviceaccount.com",
+    "kinkingetdulieu4@kinkin4.iam.gserviceaccount.com",
+    "kinkingetdulieu5@kinkin5.iam.gserviceaccount.com"
 ]
 
-# --- 1. HÀM KẾT NỐI (BẢO MẬT) ---
-def get_bot_creds_by_email(target_email):
-    """Lấy Key JSON từ biến môi trường dựa trên Email"""
-    try:
-        if target_email not in MY_BOT_LIST:
-            # Fallback về Bot Master nếu không tìm thấy
-            return get_bot_creds_by_index(0)
-        
-        idx = MY_BOT_LIST.index(target_email)
-        return get_bot_creds_by_index(idx)
-    except: return None
-
+# --- 1. AUTH ---
 def get_bot_creds_by_index(idx):
-    """Lấy Key theo số thứ tự Secret"""
     env_name = "GCP_SERVICE_ACCOUNT" if idx == 0 else f"GCP_SERVICE_ACCOUNT_{idx}"
     json_str = os.environ.get(env_name)
-    if not json_str:
-        print(f"❌ Lỗi: Chưa cài Secret {env_name} trên GitHub.")
-        return None
+    if not json_str: return None
     return service_account.Credentials.from_service_account_info(json.loads(json_str), scopes=SCOPES)
 
+def get_bot_creds_by_email(target_email):
+    try:
+        idx = MY_BOT_LIST.index(target_email)
+        return get_bot_creds_by_index(idx)
+    except: return get_bot_creds_by_index(0)
+
 def assign_bot_to_block(block_name):
-    """Logic hash để tìm Bot (Khớp với App.py)"""
     valid_bots = [b for b in MY_BOT_LIST if b.strip()]
     if not valid_bots: return None
     hash_val = sum(ord(c) for c in block_name)
     return valid_bots[hash_val % len(valid_bots)]
 
-# --- 2. LOGIC TÌM VIỆC (ROUND ROBIN) ---
-def get_next_block_to_run(gc_master):
-    """Tìm khối tiếp theo dựa trên lịch sử"""
-    try:
-        sh = gc_master.open_by_key(SHEET_ID)
-        
-        # A. Lấy danh sách khối đang Active
-        wks_cfg = sh.worksheet(SHEET_CONFIG_NAME)
-        df_cfg = get_as_dataframe(wks_cfg, evaluate_formulas=True, dtype=str)
-        # Chỉ lấy những khối có trạng thái "Chưa chốt..."
-        active_df = df_cfg[df_cfg['Trạng thái'].str.contains('Chưa chốt', na=False, case=False)]
-        active_blocks = sorted(active_df['Block_Name'].unique().tolist())
-        active_blocks = [b for b in active_blocks if b.strip()]
-        
-        if not active_blocks:
-            print("💤 Không có khối nào đang mở (Active).")
-            return None
+# --- 2. LOGIC KIỂM TRA LỊCH (SMART SCHEDULE) ---
+def parse_weekday(day_str):
+    """Map T2->0, CN->6"""
+    map_day = {'T2':0, 'T3':1, 'T4':2, 'T5':3, 'T6':4, 'T7':5, 'CN':6}
+    return map_day.get(str(day_str).upper().strip(), -1)
 
-        # B. Xem lịch sử chạy gần nhất
-        last_block = None
+def is_block_due(block_name, sched_df, last_run_time):
+    """Kiểm tra xem đã đến giờ chạy chưa"""
+    now = datetime.now(TZ_VN)
+    
+    # Tìm cấu hình lịch của block này
+    row = sched_df[sched_df['Block_Name'] == block_name]
+    if row.empty: 
+        print(f"⚪ {block_name}: Không có lịch -> Bỏ qua (Chỉ chạy tay).")
+        return False # Không có lịch thì không chạy tự động
+    
+    row = row.iloc[0]
+    l_type = str(row.get('Loai_Lich', '')).strip()
+    val1 = str(row.get('Thong_So_Chinh', '')).strip() # Phút / Giờ
+    val2 = str(row.get('Thong_So_Phu', '')).strip()   # Thứ / Ngày
+    
+    if l_type == "Không chạy": return False
+
+    # A. CHẠY THEO PHÚT (Interval)
+    if l_type == "Chạy theo phút":
+        if not last_run_time: return True # Chưa chạy bao giờ -> Chạy ngay
         try:
-            wks_log = sh.worksheet(SHEET_LOG_NAME)
-            logs = wks_log.get_all_values()[-20:] # Lấy 20 dòng cuối
-            # Tìm ngược từ dưới lên log của Auto_Runner
-            for row in reversed(logs):
-                # Giả định cột log: [Time, ConfigInfo..., User, ..., BlockName]
-                # Log của Auto_Runner thường có User="Auto_Runner"
-                if "Auto_Runner" in row:
-                    # Tìm tên khối trong log (thường ở cuối hoặc cột Block)
-                    # Cách đơn giản: Check xem row có chứa tên block nào trong active_blocks không
-                    for blk in active_blocks:
-                        if blk in row:
-                            last_block = blk
-                            break
-                    if last_block: break
-        except: pass
+            interval_min = int(val1)
+            delta = now - last_run_time
+            minutes_passed = delta.total_seconds() / 60
+            if minutes_passed >= interval_min:
+                print(f"🟢 {block_name}: Đã qua {int(minutes_passed)}p (Set: {interval_min}p) -> CHẠY.")
+                return True
+            else:
+                print(f"⏳ {block_name}: Mới qua {int(minutes_passed)}p -> Đợi.")
+                return False
+        except: return False
 
-        # C. Chọn người kế nhiệm
-        print(f"📜 Danh sách Active: {active_blocks}")
-        print(f"⏮️ Lần trước chạy: {last_block}")
-        
-        if last_block and last_block in active_blocks:
-            idx = active_blocks.index(last_block)
-            next_idx = (idx + 1) % len(active_blocks)
-            return active_blocks[next_idx]
-        else:
-            return active_blocks[0] # Chạy cái đầu tiên nếu mới tinh
+    # B. HÀNG NGÀY / HÀNG TUẦN (Fixed Time)
+    # Logic: Giờ hiện tại có trùng giờ cài đặt không? (Cron 30p quét 1 lần)
+    # Để tránh chạy lặp lại trong cùng 1 giờ, kiểm tra xem hôm nay đã chạy chưa.
+    
+    target_hour = -1
+    try: target_hour = int(val1.split(':')[0])
+    except: return False
+
+    # Check Giờ: Máy ảo chạy phút 5 và 35. 
+    # Nếu cài 08:00, máy sẽ chạy lúc 08:05 hoặc 08:35. Cả 2 đều thỏa mãn now.hour == 8.
+    if now.hour != target_hour: return False 
+
+    # Check đã chạy hôm nay chưa?
+    if last_run_time and last_run_time.date() == now.date():
+        print(f"✅ {block_name}: Hôm nay đã chạy rồi -> Đợi mai.")
+        return False
+
+    if l_type == "Hàng ngày":
+        print(f"🟢 {block_name}: Đúng giờ hàng ngày -> CHẠY.")
+        return True
+
+    if l_type == "Hàng tuần":
+        target_days = [parse_weekday(d) for d in val2.split(',')]
+        if now.weekday() in target_days:
+            print(f"🟢 {block_name}: Đúng thứ, đúng giờ -> CHẠY.")
+            return True
+    
+    return False
+
+# --- 3. TÌM VIỆC ---
+def get_jobs_to_run(gc_master):
+    sh = gc_master.open_by_key(SHEET_ID)
+    
+    # Lấy list Active
+    wks_cfg = sh.worksheet(SHEET_CONFIG_NAME)
+    df_cfg = get_as_dataframe(wks_cfg, evaluate_formulas=True, dtype=str)
+    active_blocks = df_cfg[df_cfg['Trạng thái'].str.contains('Chưa chốt', na=False, case=False)]['Block_Name'].unique().tolist()
+    active_blocks = [b for b in active_blocks if b.strip()]
+
+    # Lấy Config Lịch
+    try:
+        wks_sys = sh.worksheet(SHEET_SYS_CONFIG)
+        df_sched = get_as_dataframe(wks_sys, evaluate_formulas=True, dtype=str)
+    except: return []
+
+    # Lấy Log chạy lần cuối
+    last_run_map = {}
+    try:
+        wks_log = sh.worksheet(SHEET_LOG_NAME)
+        logs = wks_log.get_all_values()[-200:] # Quét sâu hơn
+        for row in reversed(logs):
+            if len(row) > 0 and row[1] == "Auto_Runner": # Chỉ tính Auto chạy
+                blk = row[-1]
+                if blk not in last_run_map:
+                    try:
+                        # Parse time format: 02/01/2026 15:30:00
+                        dt = datetime.strptime(row[0], "%d/%m/%Y %H:%M:%S")
+                        last_run_map[blk] = TZ_VN.localize(dt)
+                    except: pass
+    except: pass
+
+    # Duyệt từng block xem cái nào đến giờ
+    jobs = []
+    print(f"🕒 Time Check: {datetime.now(TZ_VN).strftime('%H:%M %d/%m')}")
+    for block in active_blocks:
+        last_time = last_run_map.get(block, None)
+        if is_block_due(block, df_sched, last_time):
+            jobs.append(block)
             
-    except Exception as e:
-        print(f"❌ Lỗi đọc Config: {e}")
-        return None
+    return jobs
 
-# --- 3. LOGIC XỬ LÝ DATA (CORE ETL) ---
+# --- 4. XỬ LÝ (RÚT GỌN) ---
 def safe_api_call(func, *args, **kwargs):
-    for i in range(5):
+    for i in range(3):
         try: return func(*args, **kwargs)
-        except Exception as e:
-            if "429" in str(e): time.sleep((2**i)+3)
-            else: time.sleep(2)
+        except: time.sleep(2)
     return None
 
 def extract_id(url):
     try: return url.split("/d/")[1].split("/")[0]
     except: return None
 
-def apply_filter(df, filter_str):
-    """Logic lọc đơn giản cho script chạy ngầm"""
-    if not filter_str: return df
-    try:
-        # (Giản lược logic filter để script nhẹ hơn, hoặc copy full từ app.py nếu cần)
-        # Ở đây dùng pandas query cơ bản
-        return df # Placeholder, bạn có thể paste full logic V108 vào đây nếu muốn filter kỹ
-    except: return df
-
 def process_row(row, bot_creds):
-    """Xử lý 1 dòng lệnh"""
     try:
-        # Đọc Nguồn
         sid = extract_id(row['Link dữ liệu lấy dữ liệu'])
         if not sid: return "Lỗi Link", 0
-        
         gc = gspread.authorize(bot_creds)
         sh_src = safe_api_call(gc.open_by_key, sid)
         ws_src = sh_src.worksheet(row['Tên sheet nguồn dữ liệu gốc']) if row['Tên sheet nguồn dữ liệu gốc'] else sh_src.sheet1
@@ -141,100 +177,69 @@ def process_row(row, bot_creds):
         headers = data[0]; body = data[1:]
         df = pd.DataFrame(body, columns=headers)
         
-        # Thêm cột hệ thống
         df['Src_Link'] = row['Link dữ liệu lấy dữ liệu']
         df['Src_Sheet'] = row['Tên sheet nguồn dữ liệu gốc']
         df['Month'] = row['Tháng']
-        df['Thời điểm ghi'] = datetime.now().strftime("%d/%m/%Y")
+        df['Thời điểm ghi'] = datetime.now(TZ_VN).strftime("%d/%m/%Y")
         
-        # Ghi Đích
         tid = extract_id(row['Link dữ liệu đích'])
         sh_tgt = safe_api_call(gc.open_by_key, tid)
         t_sheet = row['Tên sheet dữ liệu đích'] or "Tong_Hop_Data"
-        
         try: ws_tgt = sh_tgt.worksheet(t_sheet)
         except: ws_tgt = sh_tgt.add_worksheet(t_sheet, 1000, 20)
         
-        # Append (An toàn nhất cho chạy tự động)
         existing = safe_api_call(ws_tgt.get_all_values)
         if not existing:
             ws_tgt.update([df.columns.tolist()] + df.fillna("").values.tolist())
         else:
-            # Map cột cho đúng
             tgt_cols = existing[0]
-            df_final = pd.DataFrame()
+            df_aligned = pd.DataFrame()
             for c in tgt_cols:
-                df_final[c] = df[c] if c in df.columns else ""
-            safe_api_call(ws_tgt.append_rows, df_final.fillna("").values.tolist())
+                df_aligned[c] = df[c] if c in df.columns else ""
+            safe_api_call(ws_tgt.append_rows, df_aligned.fillna("").values.tolist())
             
         return "Thành công", len(df)
-    except Exception as e:
-        print(f"Lỗi dòng: {e}")
-        return f"Lỗi: {str(e)[:20]}", 0
+    except Exception as e: return f"Lỗi: {str(e)[:20]}", 0
 
 # --- MAIN ---
 if __name__ == "__main__":
-    if not SHEET_ID:
-        print("❌ Lỗi: Chưa cấu hình Secret HISTORY_SHEET_ID")
-        exit(1)
-
-    print("🚀 Auto Runner bắt đầu...")
+    if not SHEET_ID: print("❌ Thiếu Secret"); exit(1)
     
-    # 1. Dùng Master Bot để tìm việc
     master_creds = get_bot_creds_by_index(0)
     gc_master = gspread.authorize(master_creds)
     
-    target_block = get_next_block_to_run(gc_master)
+    # 1. Tìm việc
+    blocks_to_run = get_jobs_to_run(gc_master)
     
-    if target_block:
-        print(f"🎯 Khối được chọn: {target_block}")
+    if not blocks_to_run:
+        print("💤 Không có việc gì để làm lúc này.")
+        exit(0)
         
-        # 2. Xác định Bot phụ trách khối này
-        assigned_bot_email = assign_bot_to_block(target_block)
-        print(f"🤖 Bot thực thi: {assigned_bot_email}")
+    # 2. Chạy từng việc
+    for target_block in blocks_to_run:
+        print(f"🚀 Bắt đầu chạy: {target_block}")
+        bot_email = assign_bot_to_block(target_block)
+        worker_creds = get_bot_creds_by_email(bot_email)
         
-        worker_creds = get_bot_creds_by_email(assigned_bot_email)
-        if not worker_creds:
-            print("❌ Không lấy được quyền Bot con. Dừng.")
-            exit(1)
+        if worker_creds:
+            sh = gc_master.open_by_key(SHEET_ID)
+            ws_cfg = sh.worksheet(SHEET_CONFIG_NAME)
+            df_cfg = get_as_dataframe(ws_cfg, evaluate_formulas=True, dtype=str)
+            block_rows = df_cfg[(df_cfg['Block_Name'] == target_block) & (df_cfg['Trạng thái'].str.contains('Chưa chốt', na=False))]
             
-        # 3. Lấy chi tiết các dòng lệnh trong khối
-        sh = gc_master.open_by_key(SHEET_ID)
-        ws_cfg = sh.worksheet(SHEET_CONFIG_NAME)
-        df_cfg = get_as_dataframe(ws_cfg, evaluate_formulas=True, dtype=str)
-        
-        # Lọc ra các dòng thuộc khối này VÀ đang active
-        block_rows = df_cfg[
-            (df_cfg['Block_Name'] == target_block) & 
-            (df_cfg['Trạng thái'].str.contains('Chưa chốt', na=False))
-        ]
-        
-        # 4. Chạy từng dòng
-        total_success = 0
-        log_rows = []
-        now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        
-        for i, row in block_rows.iterrows():
-            print(f" > Xử lý dòng {i}...")
-            status, count = process_row(row, worker_creds)
+            log_rows = []
+            now_str = datetime.now(TZ_VN).strftime("%d/%m/%Y %H:%M:%S")
             
-            if status == "Thành công": total_success += 1
+            for i, row in block_rows.iterrows():
+                print(f"  > Row {i}...")
+                status, count = process_row(row, worker_creds)
+                log_rows.append([
+                    now_str, row.get('Vùng lấy dữ liệu'), row.get('Tháng'), "Auto_Runner",
+                    row.get('Link dữ liệu lấy dữ liệu'), row.get('Link dữ liệu đích'),
+                    row.get('Tên sheet dữ liệu đích'), row.get('Tên sheet nguồn dữ liệu gốc'),
+                    status, count, "Auto", target_block
+                ])
             
-            # Chuẩn bị log
-            log_rows.append([
-                now, row.get('Vùng lấy dữ liệu'), row.get('Tháng'), "Auto_Runner",
-                row.get('Link dữ liệu lấy dữ liệu'), row.get('Link dữ liệu đích'),
-                row.get('Tên sheet dữ liệu đích'), row.get('Tên sheet nguồn dữ liệu gốc'),
-                status, count, "Auto", target_block
-            ])
-            
-        # 5. Ghi Log tập trung vào Master Sheet
-        try:
-            ws_log = sh.worksheet(SHEET_LOG_NAME)
-            ws_log.append_rows(log_rows)
-            print("✅ Đã ghi log.")
-        except:
-            print("⚠️ Lỗi ghi log.")
-            
-    else:
-        print("💤 Hệ thống nghỉ ngơi (Không có khối nào Active).")
+            try: sh.worksheet(SHEET_LOG_NAME).append_rows(log_rows)
+            except: pass
+            print(f"✅ Xong {target_block}")
