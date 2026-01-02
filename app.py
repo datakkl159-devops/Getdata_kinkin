@@ -811,22 +811,49 @@ def main_ui():
              st.session_state['df_full_config'] = pd.concat([df_cfg, bd], ignore_index=True)
              save_block_config_to_sheet(bd, new_b, master_creds, uid); st.session_state['target_block_display'] = new_b; st.rerun()
 
-        # SCHEDULER (Compact)
-        with st.expander("⏰ Lịch chạy tự động"):
+        # SCHEDULER (Chi tiết - Đã phục hồi)
+        with st.expander("⏰ Lịch chạy tự động", expanded=True):
             df_sched = load_scheduler_config(master_creds)
             curr_row = df_sched[df_sched[SCHED_COL_BLOCK] == sel_blk] if SCHED_COL_BLOCK in df_sched.columns else pd.DataFrame()
             d_type = str(curr_row.iloc[0].get(SCHED_COL_TYPE, "Không chạy")) if not curr_row.empty else "Không chạy"
             d_val1 = str(curr_row.iloc[0].get(SCHED_COL_VAL1, "")) if not curr_row.empty else ""
+            d_val2 = str(curr_row.iloc[0].get(SCHED_COL_VAL2, "")) if not curr_row.empty else ""
             
-            new_type = st.selectbox("Kiểu:", ["Không chạy", "Chạy theo phút", "Hàng ngày", "Hàng tuần", "Hàng tháng"], index=["Không chạy", "Chạy theo phút", "Hàng ngày", "Hàng tuần", "Hàng tháng"].index(d_type) if d_type in ["Không chạy", "Chạy theo phút", "Hàng ngày", "Hàng tuần", "Hàng tháng"] else 0)
-            n_val1 = st.text_input("Tham số 1 (Phút/Giờ):", value=d_val1)
-            n_val2 = st.text_input("Tham số 2 (Ngày/Thứ):", value=str(curr_row.iloc[0].get(SCHED_COL_VAL2, "")) if not curr_row.empty else "")
+            if d_type != "Không chạy": st.info(f"✅ {d_type} | {d_val1} {d_val2}")
+            else: st.info("⚪ Chưa cài đặt")
+
+            opts = ["Không chạy", "Chạy theo phút", "Hàng ngày", "Hàng tuần", "Hàng tháng"]
+            new_type = st.selectbox("Kiểu:", opts, index=opts.index(d_type) if d_type in opts else 0)
+            n_val1 = d_val1; n_val2 = d_val2
             
+            if new_type == "Chạy theo phút":
+                v = int(d_val1) if d_val1.isdigit() else 60
+                n_val1 = str(st.slider("Phút (Mỗi bao lâu chạy 1 lần):", 30, 180, max(30, v), 10))
+                hrs = [f"{i:02d}:00" for i in range(24)]; idx_h = hrs.index(d_val2) if d_val2 in hrs else 8
+                n_val2 = st.selectbox("Bắt đầu từ giờ nào:", hrs, index=idx_h)
+            
+            elif new_type == "Hàng ngày":
+                hrs = [f"{i:02d}:00" for i in range(24)]; idx = hrs.index(d_val1) if d_val1 in hrs else 8
+                n_val1 = st.selectbox("Chạy vào lúc mấy giờ:", hrs, index=idx)
+                n_val2 = "" # Không cần tham số 2
+            
+            elif new_type == "Hàng tuần":
+                days = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]; od = [x.strip() for x in d_val2.split(",")]
+                sel_d = st.multiselect("Chọn các Thứ:", days, default=[d for d in od if d in days])
+                hrs = [f"{i:02d}:00" for i in range(24)]; n_val1 = st.selectbox("Chạy vào lúc mấy giờ:", hrs)
+                n_val2 = ",".join(sel_d)
+            
+            elif new_type == "Hàng tháng":
+                dates = [str(i) for i in range(1,32)]; od = [x.strip() for x in d_val2.split(",")]
+                sel_d = st.multiselect("Chọn các Ngày:", dates, default=[d for d in od if d in dates])
+                hrs = [f"{i:02d}:00" for i in range(24)]; n_val1 = st.selectbox("Chạy vào lúc mấy giờ:", hrs)
+                n_val2 = ",".join(sel_d)
+
             if st.button("💾 Lưu Lịch"):
                 if SCHED_COL_BLOCK in df_sched.columns: df_sched = df_sched[df_sched[SCHED_COL_BLOCK] != sel_blk]
                 new_r = {SCHED_COL_BLOCK: sel_blk, SCHED_COL_TYPE: new_type, SCHED_COL_VAL1: n_val1, SCHED_COL_VAL2: n_val2}
                 df_sched = pd.concat([df_sched, pd.DataFrame([new_r])], ignore_index=True)
-                save_scheduler_config(df_sched, master_creds, uid, f"{new_type}")
+                save_scheduler_config(df_sched, master_creds, uid, f"{new_type} {n_val1}")
                 st.success("Saved!"); time.sleep(1); st.rerun()
 
         # MANAGER
@@ -965,3 +992,4 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
