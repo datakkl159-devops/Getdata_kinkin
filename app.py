@@ -905,7 +905,18 @@ def main_ui():
 
     with c3:
         if st.button("🔍 Quét Quyền", use_container_width=True):
-            with st.status("Checking...", expanded=True) as st_chk: check_permissions_ui(edt_df.to_dict('records'), master_creds, st_chk, uid)
+            # 1. Xác định Bot nào đang phụ trách khối này
+            assigned_email = assign_bot_to_block(sel_blk)
+            
+            # 2. Lấy chìa khóa của đúng Bot đó
+            checking_creds = get_bot_credentials_from_secrets(assigned_email)
+            
+            with st.status(f"Đang dùng {assigned_email} để kiểm tra...", expanded=True) as st_chk:
+                if checking_creds:
+                    # 3. Quét bằng đúng Bot đó
+                    check_permissions_ui(edt_df.to_dict('records'), checking_creds, st_chk, uid)
+                else:
+                    st_chk.error(f"❌ Không tìm thấy Key cho {assigned_email}. Vui lòng kiểm tra Secrets!")
 
     with c4:
         if st.button("💾 Save Config", use_container_width=True):
@@ -919,5 +930,6 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
