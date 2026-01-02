@@ -934,10 +934,14 @@ def main_ui():
             
             main_st = st.status("🚀 Chạy toàn bộ...", expanded=True)
             total = 0
+            
+            # --- [ĐOẠN CỐT LÕI ĐƯỢC CẢI TIẾN] ---
             for idx, blk in enumerate(all_blocks):
+                # 1. Xác định Bot
                 blk_bot = assign_bot_to_block(blk)
-                main_st.write(f"⏳ [{idx+1}/{len(all_blocks)}] {blk} -> {blk_bot}")
+                main_st.write(f"⏳ [{idx+1}/{len(all_blocks)}] Xử lý: **{blk}** (Bot: {blk_bot})...")
                 
+                # 2. Lấy dữ liệu cấu hình của khối
                 blk_df = full_df[full_df[COL_BLOCK_NAME] == blk].copy().reset_index(drop=True)
                 rows_to_run = []
                 for i, r in blk_df.iterrows():
@@ -945,14 +949,25 @@ def main_ui():
                         r_dict = r.to_dict(); r_dict['_index'] = i; rows_to_run.append(r_dict)
                 
                 if rows_to_run:
+                    # 3. Chạy xử lý
                     ok, res, tot = process_pipeline_mixed(rows_to_run, uid, blk, main_st, forced_bot=blk_bot)
                     total += len(rows_to_run)
+                    
+                    # 4. Lưu kết quả ngay lập tức
                     if isinstance(res, dict):
                         for i, r in blk_df.iterrows():
                             if i in res:
                                 blk_df.at[i, COL_RESULT] = res[i][0]
                                 blk_df.at[i, COL_LOG_ROW] = res[i][1]
                         save_block_config_to_sheet(blk_df, blk, master_creds, uid)
+                    
+                    # --- [QUAN TRỌNG NHẤT] ---
+                    # Nghỉ 5 giây để Google Sheets kịp cập nhật index trước khi qua khối mới
+                    # Tránh việc khối sau đọc nhầm dữ liệu của khối trước
+                    main_st.write("💤 Đang đợi Google cập nhật dữ liệu...")
+                    time.sleep(5) 
+                    gc.collect() # Dọn dẹp bộ nhớ RAM cho nhẹ máy
+            # -------------------------------------
 
             main_st.update(label="Hoàn tất!", state="complete", expanded=False)
             st.toast("Done Run All!"); time.sleep(2)
@@ -983,5 +998,6 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
