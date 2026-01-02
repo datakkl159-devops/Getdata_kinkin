@@ -9,6 +9,7 @@ import uuid
 import numpy as np
 import gc
 from gspread_dataframe import set_with_dataframe, get_as_dataframe
+from gspread.exceptions import APIError
 from datetime import datetime
 from google.oauth2 import service_account
 from collections import defaultdict
@@ -17,7 +18,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Tool 2.0", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Tool 2.0 (V92 - Tiếng Việt)", layout="wide", page_icon="🇻🇳")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -35,21 +36,21 @@ SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
 SHEET_NOTE_NAME = "database_ghi_chu"
 
-# --- ĐỊNH NGHĨA CỘT ---
+# --- [V92] ĐỊNH NGHĨA CỘT TIẾNG VIỆT ---
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
-COL_WRITE_MODE = "Cach_Ghi"
-COL_DATA_RANGE = "Vùng lấy dữ liệu"
+COL_WRITE_MODE = "Cách ghi"          # Đã sửa thành tiếng Việt
+COL_DATA_RANGE = "Vùng lấy"          # Đã sửa
 COL_MONTH = "Tháng"
-COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"
-COL_TGT_LINK = "Link dữ liệu đích"
-COL_SRC_SHEET = "Tên sheet nguồn dữ liệu gốc"
-COL_TGT_SHEET = "Tên sheet dữ liệu đích"
+COL_SRC_LINK = "Link nguồn"          # Đã sửa
+COL_TGT_LINK = "Link đích"           # Đã sửa
+COL_SRC_SHEET = "Sheet nguồn"        # Đã sửa
+COL_TGT_SHEET = "Sheet đích"         # Đã sửa
 COL_RESULT = "Kết quả"
-COL_LOG_ROW = "Dòng dữ liệu"
-COL_FILTER = "Dieu_Kien_Loc"      
-COL_HEADER = "Lay_Header"         
-COL_COPY_FLAG = "Copy_Flag" 
+COL_LOG_ROW = "Log Row"
+COL_FILTER = "Điều kiện lọc"         # Đã sửa
+COL_HEADER = "Lấy Header?"           # Đã sửa
+COL_COPY_FLAG = "Copy"               # Đã sửa
 
 REQUIRED_COLS_CONFIG = [
     COL_BLOCK_NAME, COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, 
@@ -66,7 +67,11 @@ REQUIRED_COLS_SCHED = [SCHED_COL_BLOCK, SCHED_COL_TYPE, SCHED_COL_VAL1, SCHED_CO
 NOTE_COL_ID = "ID"; NOTE_COL_BLOCK = "Tên Khối"; NOTE_COL_CONTENT = "Nội dung Note"
 REQUIRED_COLS_NOTE = [NOTE_COL_ID, NOTE_COL_BLOCK, NOTE_COL_CONTENT]
 
-SYS_COL_LINK = "Link file nguồn"; SYS_COL_SHEET = "Sheet nguồn"; SYS_COL_MONTH = "Tháng"
+# Cột hệ thống trong Sheet Đích (Không nên đổi tiếng Việt có dấu để tránh lỗi code bên dưới)
+SYS_COL_LINK = "Src_Link"
+SYS_COL_SHEET = "Src_Sheet"
+SYS_COL_MONTH = "Month"
+
 DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
@@ -87,7 +92,6 @@ def get_creds():
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def safe_api_call(func, *args, **kwargs):
-    """Bọc API Call để chống lỗi 429 Quota Exceeded"""
     max_retries = 5
     for i in range(max_retries):
         try:
@@ -131,54 +135,53 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- SMART FILTER ENGINE (V87 DEBUG) ---
-def apply_smart_filter_v87(df, filter_str, debug_container=None):
+@st.dialog("📚 Hướng Dẫn Sử Dụng", width="large")
+def show_guide_popup():
+    st.markdown("""
+    ### 1. Cấu Trúc Bộ Lọc (Filter)
+    Sử dụng dấu chấm phẩy **`;`** để ngăn cách.
+    * `Tên SP contains Cam`
+    * `Ngày >= 2025-01-01` (Dùng định dạng YYYY-MM-DD)
+    
+    ### 2. Chế Độ Ghi
+    * **Ghi Đè:** Xóa dữ liệu cũ rồi ghi mới.
+    * **Ghi Nối Tiếp:** Giữ nguyên cũ, ghi tiếp xuống dưới đáy.
+    """)
+
+# --- SMART FILTER ENGINE ---
+def apply_smart_filter_v92(df, filter_str, debug_container=None):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
         return df, None
-    
     conditions = str(filter_str).split(';')
     current_df = df.copy()
-    
-    if debug_container:
-        debug_container.markdown(f"**🔍 Bắt đầu lọc: {len(current_df)} dòng ban đầu**")
-
+    if debug_container: debug_container.markdown(f"**🔍 Lọc: {len(current_df)} dòng gốc**")
     for i, cond in enumerate(conditions):
         fs = cond.strip()
         if not fs: continue 
-        
         operators = [" contains ", "==", "!=", ">=", "<=", ">", "<", "="]
         selected_op = None
         for op in operators:
             if op in fs: selected_op = op; break
-                
-        if not selected_op: 
-            return None, f"Lỗi cú pháp: '{fs}'"
-
+        if not selected_op: return None, f"Lỗi cú pháp: '{fs}'"
         parts = fs.split(selected_op, 1)
         user_col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
-        
-        real_col_name = None
-        if user_col in current_df.columns: 
-            real_col_name = user_col
-        else:
-            for col in current_df.columns:
-                if str(col).strip().lower() == user_col.lower(): 
-                    real_col_name = col; break
-        
-        if not real_col_name: 
-            return None, f"Không tìm thấy cột '{user_col}'"
-
         user_val = parts[1].strip()
         clean_val = user_val
         if (user_val.startswith("'") and user_val.endswith("'")) or (user_val.startswith('"') and user_val.endswith('"')):
             clean_val = user_val[1:-1]
-
+        clean_val = clean_val.strip()
+        
+        real_col_name = None
+        if user_col in current_df.columns: real_col_name = user_col
+        else:
+            for col in current_df.columns:
+                if str(col).strip().lower() == user_col.lower(): real_col_name = col; break
+        if not real_col_name: return None, f"Không tìm thấy cột '{user_col}'"
+        
         try:
             col_series = current_df[real_col_name]
-            
             if selected_op == " contains ":
                 current_df = current_df[col_series.astype(str).str.contains(clean_val, case=False, na=False)]
-            
             else:
                 is_date = False
                 try:
@@ -186,15 +189,14 @@ def apply_smart_filter_v87(df, filter_str, debug_container=None):
                     v_dt = pd.to_datetime(clean_val, dayfirst=True)
                     if s_dt.notna().any(): is_date = True
                 except: is_date = False
-
+                
                 is_num = False
                 if not is_date:
                     try:
-                        s_num = pd.to_numeric(col_series, errors='coerce')
-                        v_num = float(clean_val)
+                        s_num = pd.to_numeric(col_series, errors='coerce'); v_num = float(clean_val)
                         if s_num.notna().any(): is_num = True
                     except: is_num = False
-
+                
                 if is_date:
                     if selected_op == ">": current_df = current_df[s_dt > v_dt]
                     elif selected_op == "<": current_df = current_df[s_dt < v_dt]
@@ -202,8 +204,7 @@ def apply_smart_filter_v87(df, filter_str, debug_container=None):
                     elif selected_op == "<=": current_df = current_df[s_dt <= v_dt]
                     elif selected_op in ["=", "=="]: current_df = current_df[s_dt == v_dt]
                     elif selected_op == "!=": current_df = current_df[s_dt != v_dt]
-                    type_msg = "Ngày tháng"
-
+                    type_msg = "Ngày"
                 elif is_num:
                     if selected_op == ">": current_df = current_df[s_num > v_num]
                     elif selected_op == "<": current_df = current_df[s_num < v_num]
@@ -211,8 +212,7 @@ def apply_smart_filter_v87(df, filter_str, debug_container=None):
                     elif selected_op == "<=": current_df = current_df[s_num <= v_num]
                     elif selected_op in ["=", "=="]: current_df = current_df[s_num == v_num]
                     elif selected_op == "!=": current_df = current_df[s_num != v_num]
-                    type_msg = "Số học"
-
+                    type_msg = "Số"
                 else:
                     s_str = col_series.astype(str).str.strip()
                     if selected_op == ">": current_df = current_df[s_str > str(clean_val)]
@@ -222,13 +222,8 @@ def apply_smart_filter_v87(df, filter_str, debug_container=None):
                     elif selected_op in ["=", "=="]: current_df = current_df[s_str == str(clean_val)]
                     elif selected_op == "!=": current_df = current_df[s_str != str(clean_val)]
                     type_msg = "Chuỗi"
-
-            if debug_container:
-                debug_container.caption(f"👉 Lọc {i+1}: `{real_col_name}` {selected_op} `{clean_val}` ({type_msg}) -> Còn {len(current_df)} dòng")
-
-        except Exception as e:
-            return None, f"Lỗi xử lý '{fs}': {str(e)}"
-
+            if debug_container: debug_container.caption(f"👉 Lọc '{clean_val}' ({type_msg}) -> Còn {len(current_df)}")
+        except Exception as e: return None, f"Lỗi xử lý '{fs}': {str(e)}"
     return current_df, None
 
 # --- LOGGING SYSTEM ---
@@ -423,12 +418,13 @@ def write_detailed_log(creds, log_data_list):
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V87): {str(e)}")
+        st.warning(f"Lỗi ghi log (V92): {str(e)}")
 
 # ==========================================
 # 4. CORE ETL
 # ==========================================
 def fetch_data_v4(row_config, creds, target_headers=None, status_container=None):
+    # [V92] Mapping Column Names from Vietnamese to Code Logic
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
     month_val = str(row_config.get(COL_MONTH, ''))
@@ -484,8 +480,7 @@ def fetch_data_v4(row_config, creds, target_headers=None, status_container=None)
             except: pass
 
         if raw_filter:
-            # [V87] Truyền status_container vào để hiện log debug
-            df_filtered, err = apply_smart_filter_v87(df_working, raw_filter, debug_container=status_container)
+            df_filtered, err = apply_smart_filter_v92(df_working, raw_filter, debug_container=status_container)
             if err: return None, sheet_id, f"⚠️ {err}"
             df_working = df_filtered
 
@@ -497,6 +492,7 @@ def fetch_data_v4(row_config, creds, target_headers=None, status_container=None)
 
         df_final = df_final.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
         
+        # Cột hệ thống giữ nguyên tên tiếng Anh cho an toàn logic
         df_final[SYS_COL_LINK] = link_src.strip()
         df_final[SYS_COL_SHEET] = source_label.strip()
         df_final[SYS_COL_MONTH] = month_val.strip()
@@ -541,9 +537,10 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
 
 def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_container):
     result_map = {} 
+    debug_data = [] 
     try:
         target_id = extract_id(target_link)
-        if not target_id: return False, "Link lỗi", {}
+        if not target_id: return False, "Link lỗi", {}, []
         sh = get_sh_with_retry(creds, target_id)
         real_sheet_name = str(target_sheet_name).strip() or "Tong_Hop_Data"
         log_container.write(f"📂 Đích: ...{target_link[-10:]} | Sheet: {real_sheet_name}")
@@ -559,7 +556,7 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
         for df, src_link, r_idx, w_mode in tasks_list:
             df_new_all = pd.concat([df_new_all, df], ignore_index=True)
         
-        if df_new_all.empty: return True, "No Data", {}
+        if df_new_all.empty: return True, "No Data", {}, []
 
         existing_headers = safe_api_call(wks.row_values, 1)
         if not existing_headers:
@@ -595,9 +592,8 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
                 log_container.write("✅ Đã xóa xong. Đang cập nhật index...")
                 time.sleep(3) 
         
-        # [V87] Lấy dòng cuối CHÍNH XÁC (Sau khi xóa)
         current_data = safe_api_call(wks.get_all_values)
-        if current_data is None: start_row = 1 
+        if not current_data: start_row = 1 
         else: start_row = len(current_data) + 1
         
         log_container.write(f"🚀 Ghi {len(df_aligned)} dòng mới (từ dòng {start_row})...")
@@ -608,8 +604,7 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
             safe_api_call(wks.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
             time.sleep(1)
 
-        # [V87] Tính toán Log Row chuẩn
-        current_cursor = start_row
+        current_cursor = int(start_row)
         for df, src_link, r_idx, w_mode in tasks_list:
             count = len(df)
             if count > 0:
@@ -620,10 +615,11 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_
                 rng_str = "0 dòng"
             
             result_map[r_idx] = ("Thành công", rng_str, count)
+            debug_data.append({"File": src_link[-10:], "Mode": w_mode, "Start": current_cursor - count, "End": end if count >0 else 0, "Range Log": rng_str})
             
-        return True, f"Cập nhật {len(df_aligned)} dòng", result_map
+        return True, f"Cập nhật {len(df_aligned)} dòng", result_map, debug_data
 
-    except Exception as e: return False, f"Lỗi Ghi: {str(e)}", {}
+    except Exception as e: return False, f"Lỗi Ghi: {str(e)}", {}, []
 
 # --- PIPELINE MAIN FUNCTION ---
 def verify_access_fast(url, creds):
@@ -667,6 +663,7 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                 grouped[(str(r.get(COL_TGT_LINK, '')).strip(), str(r.get(COL_TGT_SHEET, '')).strip())].append(r)
         
         final_res_map = {}; all_ok = True; total_rows = 0; log_ents = []
+        all_debug_data = [] 
         tz = pytz.timezone('Asia/Ho_Chi_Minh'); now = datetime.now(tz).strftime("%d/%m/%Y %H:%M:%S")
 
         for idx, ((t_link, t_sheet), group_rows) in enumerate(grouped.items()):
@@ -689,11 +686,9 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                     w_mode = str(r.get(COL_WRITE_MODE, 'Ghi Đè')).strip()
                     if w_mode not in ["Ghi Đè", "Ghi Nối Tiếp"]: w_mode = "Ghi Đè"
 
-                    # Visual Status
                     msg_placeholder = st.empty()
                     msg_placeholder.write(f"⏳ Đang tải: {lnk[-10:]} ({lbl})...")
                     
-                    # [V87] Pass msg_placeholder for Debug Filter
                     df, sid, msg = fetch_data_v4(r, creds, target_headers, status_container=msg_placeholder)
                     time.sleep(1.0)
                     
@@ -709,10 +704,11 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                     del df; gc.collect()
 
                 if tasks:
-                    ok, msg, batch_res_map = write_strict_sync_v2(tasks, t_link, t_sheet, creds, st)
+                    ok, msg, batch_res_map, batch_debug = write_strict_sync_v2(tasks, t_link, t_sheet, creds, st)
                     if not ok: st.error(msg); all_ok = False
                     else: st.success(msg)
                     final_res_map.update(batch_res_map)
+                    all_debug_data.extend(batch_debug)
                     del tasks; gc.collect()
                 
                 for r in group_rows:
@@ -729,6 +725,10 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
         status_msg = f"Hoàn tất: Xử lý {total_rows} dòng. Lỗi: {not all_ok}"
         log_user_action_buffered(creds, user_id, f"Kết quả chạy {block_name_run}", status_msg, force_flush=True)
         
+        if all_debug_data:
+            st.markdown("### 📊 Kết quả chi tiết (Debug)")
+            st.dataframe(pd.DataFrame(all_debug_data))
+
         return all_ok, final_res_map, total_rows
     finally: release_lock(creds, user_id)
 
@@ -740,7 +740,7 @@ def load_full_config(_creds):
     sh = get_sh_with_retry(_creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     ensure_sheet_headers(wks, REQUIRED_COLS_CONFIG)
-    # [V87] Safe
+    # [V92] Safe
     df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
     
     if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
@@ -798,7 +798,7 @@ def rename_block_action(old, new, creds, uid):
     if not acquire_lock(creds, uid): return False
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # [V87] Safe
+        # [V92] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         df.loc[df[COL_BLOCK_NAME] == old, COL_BLOCK_NAME] = new
         wks.clear(); 
@@ -811,7 +811,7 @@ def delete_block_direct(blk, creds, uid):
     if not acquire_lock(creds, uid): return
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
-        # [V87] Safe
+        # [V92] Safe
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
         df_new = df[df[COL_BLOCK_NAME] != blk]
         wks.clear(); 
@@ -833,7 +833,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin Tool 2.0 lấy dữ liệu From GG Sheet To GG Sheet", help="V88: Fixed Try-Except"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin Tool 2.0 (V92 - Tiếng Việt)", help="V92: Vietnamese Headers"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -908,7 +908,8 @@ def main_ui():
                 if rename_block_action(sel_blk, rn, creds, uid): st.cache_data.clear(); del st.session_state['df_full_config']; st.session_state['target_block_display'] = rn; st.rerun()
             if st.button("🗑️ Delete"): delete_block_direct(sel_blk, creds, uid); st.cache_data.clear(); del st.session_state['df_full_config']; st.rerun()
         st.divider(); 
-        if st.button("📝 Note"): show_note_popup(creds, blks, uid)
+        if st.button("📝 Note", use_container_width=True): show_note_popup(creds, blks, uid)
+        if st.button("📚 Hướng dẫn", use_container_width=True): show_guide_popup()
 
     st.subheader(f"Config: {sel_blk}")
     curr_df = st.session_state['df_full_config'][st.session_state['df_full_config'][COL_BLOCK_NAME] == sel_blk].copy().reset_index(drop=True)
@@ -921,18 +922,18 @@ def main_ui():
         column_config={
             COL_COPY_FLAG: st.column_config.CheckboxColumn("Copy", width="small", default=False),
             "STT": st.column_config.NumberColumn("STT", width="small", disabled=True),
-            COL_STATUS: st.column_config.SelectboxColumn("Trạng Thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
+            COL_STATUS: st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
             COL_WRITE_MODE: st.column_config.SelectboxColumn("Cách ghi", options=["Ghi Đè", "Ghi Nối Tiếp"], default="Ghi Đè", required=True),
-            COL_DATA_RANGE: st.column_config.TextColumn("Vùng Lấy", width="small", default="Lấy hết"),
+            COL_DATA_RANGE: st.column_config.TextColumn("Vùng lấy", width="small", default="Lấy hết"),
             COL_MONTH: st.column_config.TextColumn("Tháng", width="small"),
             COL_SRC_LINK: st.column_config.LinkColumn("Link nguồn", width="medium"), 
-            COL_TGT_LINK: st.column_config.LinkColumn("Link Đích", width="medium"),
-            COL_FILTER: st.column_config.TextColumn("Điều Kiện Lọc", width="medium"),
+            COL_TGT_LINK: st.column_config.LinkColumn("Link đích", width="medium"),
+            COL_FILTER: st.column_config.TextColumn("Điều kiện lọc", width="medium"),
             COL_HEADER: st.column_config.CheckboxColumn("Lấy Header?", default=False), 
-            COL_RESULT: st.column_config.TextColumn("Kết Quả", disabled=True),
+            COL_RESULT: st.column_config.TextColumn("Kết quả", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v88"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v92"
     )
 
     if edt_df[COL_COPY_FLAG].any():
@@ -1009,4 +1010,3 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
-
