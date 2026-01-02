@@ -18,9 +18,9 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Tool 2.0 (V104 - Block Auto)", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="Kinkin Tool 2.0 (V105 - Bot Email Tracking)", layout="wide", page_icon="📝")
 
-# 🟢 DANH SÁCH BOT CỦA BẠN (Hệ thống sẽ tự chia khối cho các bot này)
+# 🟢 DANH SÁCH 5 BOT (Code sẽ tự chia khối cho danh sách này)
 MY_BOT_LIST = [
     "getdulieu@kin-kin-477902.iam.gserviceaccount.com", # Bot 1
     "botnew@kinkin2.iam.gserviceaccount.com",          # Bot 2
@@ -44,17 +44,19 @@ SHEET_SYS_CONFIG = "sys_config"
 SHEET_NOTE_NAME = "database_ghi_chu"
 SHEET_SYS_STATE = "sys_state"
 
-# --- ĐỊNH NGHĨA CỘT (Đã bỏ cột Bot_Phu_Trach) ---
+# --- ĐỊNH NGHĨA CỘT ---
+# [V105] Đổi tên cột tracking thành "Bot_email" theo yêu cầu
 COL_BLOCK_NAME = "Block_Name"; COL_STATUS = "Trạng thái"; COL_WRITE_MODE = "Cach_Ghi"
 COL_DATA_RANGE = "Vùng lấy dữ liệu"; COL_MONTH = "Tháng"; COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"
 COL_TGT_LINK = "Link dữ liệu đích"; COL_SRC_SHEET = "Tên sheet nguồn dữ liệu gốc"
 COL_TGT_SHEET = "Tên sheet dữ liệu đích"; COL_RESULT = "Kết quả"; COL_LOG_ROW = "Dòng dữ liệu"
 COL_FILTER = "Dieu_Kien_Loc"; COL_HEADER = "Lay_Header"; COL_COPY_FLAG = "Copy_Flag"
+COL_BOT_EMAIL = "Bot_email" # <--- Cột mới để lưu vào Sheet
 
 REQUIRED_COLS_CONFIG = [
     COL_BLOCK_NAME, COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, 
     COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, 
-    COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER
+    COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_BOT_EMAIL
 ]
 
 SCHED_COL_BLOCK = "Block_Name"; SCHED_COL_TYPE = "Loai_Lich"
@@ -104,14 +106,9 @@ def get_bot_credentials_from_secrets(target_email):
     return None
 
 def assign_bot_to_block(block_name):
-    """
-    Thuật toán: Hash tên khối để chia đều cho 5 Bot.
-    Cùng một tên khối sẽ luôn ra cùng một Bot (Tính ổn định).
-    """
+    """Hash tên khối để chia đều cho 5 Bot (Cố định theo tên khối)"""
     valid_bots = [b for b in MY_BOT_LIST if b.strip() and "@" in b]
     if not valid_bots: return "No_Bot_Configured"
-    
-    # Tính tổng giá trị ASCII của tên khối để làm hạt giống
     hash_val = sum(ord(c) for c in block_name)
     bot_index = hash_val % len(valid_bots)
     return valid_bots[bot_index]
@@ -164,7 +161,7 @@ def log_user_action_buffered(creds, user_id, action, status="", force_flush=Fals
 def detect_df_changes(df_old, df_new):
     if len(df_old) != len(df_new): return f"Thay đổi dòng: {len(df_old)} -> {len(df_new)}"
     changes = []
-    ignore = [COL_BLOCK_NAME, COL_LOG_ROW, COL_RESULT, "STT", COL_COPY_FLAG, "_index"]
+    ignore = [COL_BLOCK_NAME, COL_LOG_ROW, COL_RESULT, "STT", COL_COPY_FLAG, "_index", COL_BOT_EMAIL] # Ignore system cols
     cols = [c for c in df_new.columns if c not in ignore and c in df_old.columns]
     dfo = df_old.reset_index(drop=True); dfn = df_new.reset_index(drop=True)
     for i in range(len(dfo)):
@@ -235,7 +232,9 @@ def load_scheduler_config(creds):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         try: wks = sh.worksheet(SHEET_SYS_CONFIG)
-        except: wks = sh.add_worksheet(SHEET_SYS_CONFIG, rows=50, cols=5); wks.append_row(REQUIRED_COLS_SCHED)
+        except: 
+            wks = sh.add_worksheet(SHEET_SYS_CONFIG, rows=50, cols=5)
+            wks.append_row(REQUIRED_COLS_SCHED)
         ensure_sheet_headers(wks, REQUIRED_COLS_SCHED)
         df = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         if SCHED_COL_BLOCK not in df.columns: return pd.DataFrame(columns=REQUIRED_COLS_SCHED)
@@ -249,7 +248,8 @@ def save_scheduler_config(df_sched, creds, user_id, type_run, v1, v2):
         cols = REQUIRED_COLS_SCHED
         for c in cols:
             if c not in df_sched.columns: df_sched[c] = ""
-        wks.clear(); safe_set_with_dataframe(wks, df_sched[cols].fillna(""), row=1, col=1)
+        wks.clear(); 
+        safe_set_with_dataframe(wks, df_sched[cols].fillna(""), row=1, col=1)
         msg = f"Cài đặt: {type_run} | {v1} {v2}".strip()
         log_user_action_buffered(creds, user_id, "Cài Lịch Chạy", msg, force_flush=True)
         return True
@@ -279,7 +279,7 @@ def write_detailed_log(creds, log_data_list):
     except Exception as e: st.warning(f"Lỗi ghi log: {str(e)}")
 
 # ==========================================
-# 4. CORE ETL (LOGIC XỬ LÝ DỮ LIỆU)
+# 4. CORE ETL
 # ==========================================
 def apply_smart_filter_v90(df, filter_str, debug_container=None):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']: return df, None
@@ -523,24 +523,40 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, bot_creds, 
         return True, f"Cập nhật {len(df_aligned)} dòng", result_map, debug_data
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}", {}, []
 
+def verify_access_fast(url, creds):
+    sid = extract_id(url)
+    if not sid: return False, "Lỗi Link"
+    try: get_sh_with_retry(creds, sid); return True, "OK"
+    except: return False, "Chặn"
+
+def check_permissions_ui(rows, creds, cont, uid):
+    src, tgt = set(), set()
+    for r in rows:
+        if "docs" in str(r.get(COL_SRC_LINK)): src.add(str(r.get(COL_SRC_LINK)))
+        if "docs" in str(r.get(COL_TGT_LINK)): tgt.add(str(r.get(COL_TGT_LINK)))
+    all_l = list(src.union(tgt))
+    if not all_l: cont.info("No links"); return
+    err = 0; prog = cont.progress(0)
+    for i, l in enumerate(all_l):
+        prog.progress((i+1)/len(all_l))
+        ok, m = verify_access_fast(l, creds)
+        if not ok: cont.error(f"❌ {l}"); err+=1
+    if err==0: cont.success("✅ OK")
+
 def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_container, forced_bot=None):
     master_creds = get_master_creds()
     if not acquire_lock(master_creds, user_id): st.error("⚠️ Hệ thống bận!"); return False, {}, 0
     
-    # [V104] Logic phân quyền Bot theo Block
-    # Nếu không có bot chỉ định (Run All Blocks), thì dùng thuật toán Hash
-    if forced_bot:
-        assigned_bot_email = forced_bot
-    else:
-        assigned_bot_email = assign_bot_to_block(block_name_run)
+    # [V105] Ưu tiên lấy Bot từ Sheet nếu có, nếu không thì tính mới
+    # Nhưng nếu user chạy "Run All" (forced_bot) thì dùng cái đó
+    assigned_bot_email = forced_bot if forced_bot else assign_bot_to_block(block_name_run)
 
     log_user_action_buffered(master_creds, user_id, f"Chạy: {block_name_run}", f"Bot: {assigned_bot_email}", force_flush=True)
     
     try:
-        # Lấy Credentials của Bot được chỉ định
         bot_creds = get_bot_credentials_from_secrets(assigned_bot_email)
         if not bot_creds:
-            st.error(f"❌ Không tìm thấy key cho {assigned_bot_email}. Vui lòng kiểm tra Secrets."); return False, {}, 0
+            st.error(f"❌ Không tìm thấy key cho {assigned_bot_email}. Check Secrets!"); return False, {}, 0
 
         grouped = defaultdict(list)
         for r in rows_to_run:
@@ -631,6 +647,13 @@ def load_full_config(_creds):
     df[COL_BLOCK_NAME] = df[COL_BLOCK_NAME].replace('', DEFAULT_BLOCK_NAME).fillna(DEFAULT_BLOCK_NAME)
     if COL_WRITE_MODE not in df.columns: df[COL_WRITE_MODE] = "Ghi Đè"
     
+    # [V105] Tự động điền cột Bot_email vào dataframe để hiển thị
+    if COL_BOT_EMAIL not in df.columns: df[COL_BOT_EMAIL] = ""
+    for i, row in df.iterrows():
+        block = row[COL_BLOCK_NAME]
+        # Luôn tính toán lại để đảm bảo đúng với Logic Hash hiện tại
+        df.at[i, COL_BOT_EMAIL] = assign_bot_to_block(block)
+        
     return df
 
 def save_block_config_to_sheet(df_ui, blk_name, creds, uid):
@@ -650,12 +673,17 @@ def save_block_config_to_sheet(df_ui, blk_name, creds, uid):
         log_user_action_buffered(creds, uid, f"Lưu Config {blk_name}", change_msg, force_flush=True)
         
         df_oth = df_svr[df_svr[COL_BLOCK_NAME] != blk_name]
-        ignore = ['STT', COL_COPY_FLAG, '_index', 'Che_Do_Ghi', COL_ASSIGNED_BOT] # Clean old cols
+        ignore = ['STT', COL_COPY_FLAG, '_index', 'Che_Do_Ghi']
         for c in ignore: 
             if c in df_new_blk.columns: df_new_blk = df_new_blk.drop(columns=[c])
         
         df_fin = pd.concat([df_oth, df_new_blk], ignore_index=True).astype(str).replace(['nan', 'None'], '')
         
+        # [V105] Đảm bảo trước khi lưu, cột Bot_email đã được tính toán
+        if COL_BOT_EMAIL not in df_fin.columns: df_fin[COL_BOT_EMAIL] = ""
+        for i, row in df_fin.iterrows():
+             df_fin.at[i, COL_BOT_EMAIL] = assign_bot_to_block(row[COL_BLOCK_NAME])
+
         wks.clear(); safe_set_with_dataframe(wks, df_fin, row=1, col=1)
         st.toast("Saved!", icon="💾")
     finally: release_lock(creds, uid)
@@ -689,13 +717,11 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; master_creds = get_master_creds()
     
-    # --- [V104] HEADER THÔNG MINH ---
-    # Tự động tính toán bot nào sẽ phụ trách block này
+    # --- [HEADER] ---
     if 'df_full_config' not in st.session_state: st.session_state['df_full_config'] = load_full_config(master_creds)
     df_cfg = st.session_state['df_full_config']
     blks = df_cfg[COL_BLOCK_NAME].unique().tolist() if not df_cfg.empty else [DEFAULT_BLOCK_NAME]
     
-    # Sidebar Select
     with st.sidebar:
         if st.button("🔄 Reload"): st.cache_data.clear(); st.session_state['df_full_config'] = load_full_config(master_creds); st.rerun()
         if 'target_block_display' not in st.session_state: st.session_state['target_block_display'] = blks[0]
@@ -708,33 +734,70 @@ def main_ui():
              st.session_state['df_full_config'] = pd.concat([df_cfg, bd], ignore_index=True)
              save_block_config_to_sheet(bd, new_b, master_creds, uid); st.session_state['target_block_display'] = new_b; st.rerun()
 
-        # ... (Scheduler, Manager logic retained inside expanders) ...
+        # SCHEDULER
         with st.expander("⏰ Lịch chạy tự động", expanded=True):
             df_sched = load_scheduler_config(master_creds)
             curr_row = df_sched[df_sched[SCHED_COL_BLOCK] == sel_blk] if SCHED_COL_BLOCK in df_sched.columns else pd.DataFrame()
             d_type = str(curr_row.iloc[0].get(SCHED_COL_TYPE, "Không chạy")) if not curr_row.empty else "Không chạy"
-            if d_type != "Không chạy": st.info(f"✅ Đang cài: {d_type}")
-            else: st.info("⚪ Chưa cài")
-            # (Rút gọn UI để code ngắn, logic backend vẫn đủ)
-            if st.button("⚙️ Cài đặt chi tiết"): st.toast("Vui lòng mở rộng code phần này nếu cần chỉnh sửa sâu.")
+            d_val1 = str(curr_row.iloc[0].get(SCHED_COL_VAL1, "")) if not curr_row.empty else ""
+            d_val2 = str(curr_row.iloc[0].get(SCHED_COL_VAL2, "")) if not curr_row.empty else ""
+            
+            if d_type != "Không chạy": st.info(f"✅ {d_type} | {d_val1} {d_val2}")
+            else: st.info("⚪ Chưa cài đặt")
 
+            opts = ["Không chạy", "Chạy theo phút", "Hàng ngày", "Hàng tuần", "Hàng tháng"]
+            new_type = st.selectbox("Kiểu:", opts, index=opts.index(d_type) if d_type in opts else 0)
+            n_val1 = d_val1; n_val2 = d_val2
+            
+            if new_type == "Chạy theo phút":
+                v = int(d_val1) if d_val1.isdigit() else 60
+                n_val1 = str(st.slider("Phút:", 30, 180, max(30, v), 10))
+                hrs = [f"{i:02d}:00" for i in range(24)]; idx_h = hrs.index(d_val2) if d_val2 in hrs else 8
+                n_val2 = st.selectbox("Start:", hrs, index=idx_h)
+            elif new_type == "Hàng ngày":
+                hrs = [f"{i:02d}:00" for i in range(24)]; idx = hrs.index(d_val1) if d_val1 in hrs else 8
+                n_val1 = st.selectbox("Giờ:", hrs, index=idx)
+            elif new_type == "Hàng tuần":
+                days = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]; od = [x.strip() for x in d_val2.split(",")]
+                sel_d = st.multiselect("Thứ:", days, default=[d for d in od if d in days])
+                hrs = [f"{i:02d}:00" for i in range(24)]; n_val1 = st.selectbox("Giờ:", hrs)
+                n_val2 = ",".join(sel_d)
+            elif new_type == "Hàng tháng":
+                dates = [str(i) for i in range(1,32)]; od = [x.strip() for x in d_val2.split(",")]
+                sel_d = st.multiselect("Ngày:", dates, default=[d for d in od if d in dates])
+                hrs = [f"{i:02d}:00" for i in range(24)]; n_val1 = st.selectbox("Giờ:", hrs)
+                n_val2 = ",".join(sel_d)
+
+            if st.button("💾 Lưu Lịch"):
+                if SCHED_COL_BLOCK in df_sched.columns: df_sched = df_sched[df_sched[SCHED_COL_BLOCK] != sel_blk]
+                new_r = {SCHED_COL_BLOCK: sel_blk, SCHED_COL_TYPE: new_type, SCHED_COL_VAL1: n_val1, SCHED_COL_VAL2: n_val2}
+                df_sched = pd.concat([df_sched, pd.DataFrame([new_r])], ignore_index=True)
+                save_scheduler_config(df_sched, master_creds, uid, f"{new_type} {n_val1}")
+                st.success("Saved!"); time.sleep(1); st.rerun()
+
+        # MANAGER
         with st.expander("⚙️ Manager"):
-            new_b = st.text_input("New Block:"); 
-            if st.button("➕ Add"): 
+            new_b = st.text_input("New Block:")
+            if st.button("➕ Add"):
                 row = {c: "" for c in df_cfg.columns}; row[COL_BLOCK_NAME] = new_b; row[COL_STATUS] = "Chưa chốt & đang cập nhật"
-                st.session_state['df_full_config'] = pd.concat([df_cfg, pd.DataFrame([row])], ignore_index=True); st.rerun()
-            if st.button("🗑️ Delete"): delete_block_direct(sel_blk, master_creds, uid); st.rerun()
+                st.session_state['df_full_config'] = pd.concat([df_cfg, pd.DataFrame([row])], ignore_index=True)
+                st.session_state['target_block_display'] = new_b; st.rerun()
+            rn = st.text_input("Rename to:", value=sel_blk)
+            if st.button("✏️ Rename") and rn != sel_blk:
+                if rename_block_action(sel_blk, rn, master_creds, uid): st.cache_data.clear(); st.session_state['target_block_display'] = rn; st.rerun()
+            if st.button("🗑️ Delete"): delete_block_direct(sel_blk, master_creds, uid); st.cache_data.clear(); st.rerun()
         
-        st.divider(); 
-        if st.button("📝 Note"): show_note_popup(master_creds, blks, uid)
-        if st.button("📚 HDSD"): st.info(f"Hệ thống sẽ tự động gán Bot dựa trên tên Khối.\nKhối '{sel_blk}' sẽ luôn do 1 Bot cố định chạy.")
+        st.divider()
+        if st.button("📝 Note", use_container_width=True): show_note_popup(master_creds, blks, uid)
+        if st.button("📚 Hướng dẫn", use_container_width=True): 
+            st.dialog("HDSD")(lambda: st.markdown("1. Code sẽ tự động gán Bot cho khối.\n2. Cột Bot_email sẽ được lưu vào Sheet để bạn theo dõi."))()
 
     # Calculate Assigned Bot for current block
     assigned_bot = assign_bot_to_block(sel_blk)
 
     c_head_1, c_head_2 = st.columns([3, 1.5])
     with c_head_1:
-        st.title("💎 Kinkin Tool 2.0 (V104)"); st.caption(f"User: {uid}")
+        st.title("💎 Kinkin Tool 2.0 (V105)"); st.caption(f"User: {uid}")
     with c_head_2:
         st.info(f"🤖 **Bot phụ trách khối này:**")
         st.code(assigned_bot, language="text")
@@ -747,16 +810,17 @@ def main_ui():
 
     edt_df = st.data_editor(
         curr_df,
-        column_order=[COL_COPY_FLAG, "STT", COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW],
+        column_order=[COL_COPY_FLAG, "STT", COL_BOT_EMAIL, COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW],
         column_config={
+            COL_BOT_EMAIL: st.column_config.TextColumn("Bot Email (Auto)", disabled=True, width="medium", help="Bot được hệ thống tự động chỉ định"),
             COL_STATUS: st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
-            COL_WRITE_MODE: st.column_config.SelectboxColumn("Cách ghi", options=["Ghi Đè", "Ghi Nối Tiếp"], default="Ghi Đè"),
+            COL_WRITE_MODE: st.column_config.SelectboxColumn("Cách ghi", options=["Ghi Đè", "Ghi Nối Tiếp"], default="Ghi Đè", required=True),
             COL_SRC_LINK: st.column_config.LinkColumn("Link nguồn", width="medium"),
             COL_TGT_LINK: st.column_config.LinkColumn("Link đích", width="medium"),
             "STT": st.column_config.NumberColumn("STT", width="small", disabled=True),
             COL_RESULT: st.column_config.TextColumn("Kết quả", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v104"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v105"
     )
 
     if edt_df[COL_COPY_FLAG].any():
@@ -767,7 +831,7 @@ def main_ui():
         st.session_state['df_full_config'] = pd.concat([st.session_state['df_full_config'][st.session_state['df_full_config'][COL_BLOCK_NAME] != sel_blk], pd.DataFrame(nw)], ignore_index=True)
         st.rerun()
 
-    c1, c2, c3 = st.columns([1,1,2])
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("▶️ RUN BLOCK", type="primary", use_container_width=True):
             save_block_config_to_sheet(edt_df, sel_blk, master_creds, uid)
@@ -777,7 +841,6 @@ def main_ui():
                     r_dict = r.to_dict(); r_dict['_index'] = i; rows.append(r_dict)
             if not rows: st.warning("Không có dòng nào để chạy."); st.stop()
             st_cont = st.status(f"🚀 Đang chạy {sel_blk} (Bot: {assigned_bot})...", expanded=True)
-            # Pass assigned bot explicitly
             ok, res, tot = process_pipeline_mixed(rows, uid, sel_blk, st_cont, forced_bot=assigned_bot)
             
             if isinstance(res, dict):
@@ -789,7 +852,6 @@ def main_ui():
             st.cache_data.clear(); time.sleep(1); st.rerun()
 
     with c2:
-        # [V104] RUN ALL BLOCKS RESTORED
         if st.button("⏩ RUN ALL BLOCKS", use_container_width=True):
             full_df = st.session_state['df_full_config']
             all_blocks = full_df[COL_BLOCK_NAME].unique().tolist()
@@ -798,15 +860,11 @@ def main_ui():
             main_st = st.status("🚀 Chạy toàn bộ...", expanded=True)
             total = 0
             for idx, blk in enumerate(all_blocks):
-                # Tự động tìm bot cho block này
                 blk_bot = assign_bot_to_block(blk)
                 main_st.write(f"⏳ [{idx+1}/{len(all_blocks)}] {blk} -> {blk_bot}")
-                
-                # Lấy rows
                 blk_rows = full_df[full_df[COL_BLOCK_NAME] == blk].to_dict('records')
-                # Filter active rows only
                 active_rows = [r for i, r in enumerate(blk_rows) if r.get(COL_STATUS) == "Chưa chốt & đang cập nhật"]
-                for i, r in enumerate(active_rows): r['_index'] = i # Fake index mapping won't update UI perfectly but runs logic
+                for i, r in enumerate(active_rows): r['_index'] = i 
                 
                 if active_rows:
                     process_pipeline_mixed(active_rows, uid, blk, main_st, forced_bot=blk_bot)
@@ -816,6 +874,10 @@ def main_ui():
             st.toast("Done Run All!"); time.sleep(2)
 
     with c3:
+        if st.button("🔍 Quét Quyền", use_container_width=True):
+            with st.status("Checking...", expanded=True) as st_chk: check_permissions_ui(edt_df.to_dict('records'), master_creds, st_chk, uid)
+
+    with c4:
         if st.button("💾 Save Config", use_container_width=True):
             save_block_config_to_sheet(edt_df, sel_blk, master_creds, uid); st.rerun()
 
