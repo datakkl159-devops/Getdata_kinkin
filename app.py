@@ -789,12 +789,13 @@ def delete_block_direct(blk, creds, uid):
 # ==========================================
 # 7. MAIN UI
 # ==========================================
+# --- [ĐOẠN CODE MAIN_UI ĐÃ SỬA LỖI & LOGIC] ---
 def main_ui():
     init_log_buffer()
     if not check_login(): return
     uid = st.session_state['current_user_id']; master_creds = get_master_creds()
     
-    # --- [HEADER] ---
+    # --- HEADER ---
     if 'df_full_config' not in st.session_state: st.session_state['df_full_config'] = load_full_config(master_creds)
     df_cfg = st.session_state['df_full_config']
     blks = df_cfg[COL_BLOCK_NAME].unique().tolist() if not df_cfg.empty else [DEFAULT_BLOCK_NAME]
@@ -811,7 +812,7 @@ def main_ui():
              st.session_state['df_full_config'] = pd.concat([df_cfg, bd], ignore_index=True)
              save_block_config_to_sheet(bd, new_b, master_creds, uid); st.session_state['target_block_display'] = new_b; st.rerun()
 
-        # SCHEDULER (Chi tiết - Đã phục hồi)
+        # --- SCHEDULER (ĐÃ SỬA LỖI) ---
         with st.expander("⏰ Lịch chạy tự động", expanded=True):
             df_sched = load_scheduler_config(master_creds)
             curr_row = df_sched[df_sched[SCHED_COL_BLOCK] == sel_blk] if SCHED_COL_BLOCK in df_sched.columns else pd.DataFrame()
@@ -828,14 +829,13 @@ def main_ui():
             
             if new_type == "Chạy theo phút":
                 v = int(d_val1) if d_val1.isdigit() else 60
-                n_val1 = str(st.slider("Phút (Mỗi bao lâu chạy 1 lần):", 30, 180, max(30, v), 10))
-                hrs = [f"{i:02d}:00" for i in range(24)]; idx_h = hrs.index(d_val2) if d_val2 in hrs else 8
-                n_val2 = st.selectbox("Bắt đầu từ giờ nào:", hrs, index=idx_h)
+                n_val1 = str(st.slider("Cứ bao nhiêu phút chạy 1 lần?", 30, 180, max(30, v), 10))
+                n_val2 = "" # [Fixed] Không cần giờ bắt đầu, chạy ngay khi đến hạn
             
             elif new_type == "Hàng ngày":
                 hrs = [f"{i:02d}:00" for i in range(24)]; idx = hrs.index(d_val1) if d_val1 in hrs else 8
                 n_val1 = st.selectbox("Chạy vào lúc mấy giờ:", hrs, index=idx)
-                n_val2 = "" # Không cần tham số 2
+                n_val2 = ""
             
             elif new_type == "Hàng tuần":
                 days = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]; od = [x.strip() for x in d_val2.split(",")]
@@ -853,7 +853,8 @@ def main_ui():
                 if SCHED_COL_BLOCK in df_sched.columns: df_sched = df_sched[df_sched[SCHED_COL_BLOCK] != sel_blk]
                 new_r = {SCHED_COL_BLOCK: sel_blk, SCHED_COL_TYPE: new_type, SCHED_COL_VAL1: n_val1, SCHED_COL_VAL2: n_val2}
                 df_sched = pd.concat([df_sched, pd.DataFrame([new_r])], ignore_index=True)
-                save_scheduler_config(df_sched, master_creds, uid, f"{new_type} {n_val1}")
+                # [Fixed] Truyền đúng 6 tham số
+                save_scheduler_config(df_sched, master_creds, uid, new_type, n_val1, n_val2)
                 st.success("Saved!"); time.sleep(1); st.rerun()
 
         # MANAGER
@@ -874,7 +875,7 @@ def main_ui():
 
     assigned_bot = assign_bot_to_block(sel_blk)
     c_head_1, c_head_2 = st.columns([3, 1.5])
-    with c_head_1: st.title("💎 Kinkin Tool 2.0 (V108.3)"); st.caption(f"User: {uid}")
+    with c_head_1: st.title("💎 Kinkin Tool 2.0 (V109)"); st.caption(f"User: {uid}")
     with c_head_2: st.info(f"🤖 **Bot phụ trách:**"); st.code(assigned_bot, language="text")
 
     # --- MAIN EDITOR ---
@@ -883,7 +884,6 @@ def main_ui():
     if COL_COPY_FLAG not in curr_df.columns: curr_df.insert(0, COL_COPY_FLAG, False)
     if 'STT' not in curr_df.columns: curr_df.insert(1, 'STT', range(1, len(curr_df)+1))
 
-    # [V108] Checkbox Config
     edt_df = st.data_editor(
         curr_df,
         column_order=[COL_COPY_FLAG, "STT", COL_STATUS, COL_WRITE_MODE, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW],
@@ -896,7 +896,7 @@ def main_ui():
             "STT": st.column_config.NumberColumn("STT", width="small", disabled=True),
             COL_RESULT: st.column_config.TextColumn("Kết quả", disabled=True),
             COL_BLOCK_NAME: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v108"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v109"
     )
 
     if edt_df[COL_COPY_FLAG].any():
@@ -910,31 +910,20 @@ def main_ui():
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("▶️ RUN BLOCK", type="primary", use_container_width=True):
-            # 1. Lưu config trước khi chạy để đảm bảo dữ liệu mới nhất
             save_block_config_to_sheet(edt_df, sel_blk, master_creds, uid)
-            
             rows = []
             for i, r in edt_df.iterrows():
                 if str(r.get(COL_STATUS,'')).strip() == "Chưa chốt & đang cập nhật":
                     r_dict = r.to_dict(); r_dict['_index'] = i; rows.append(r_dict)
-            
             if not rows: st.warning("Không có dòng nào để chạy."); st.stop()
             st_cont = st.status(f"🚀 Đang chạy {sel_blk} (Bot: {assigned_bot})...", expanded=True)
-            
             ok, res, tot = process_pipeline_mixed(rows, uid, sel_blk, st_cont, forced_bot=assigned_bot)
-            
             if isinstance(res, dict):
-                # [V108] Cập nhật kết quả vào dataframe và lưu ngay lập tức
                 for i, r in edt_df.iterrows():
-                    if i in res: 
-                        edt_df.at[i, COL_RESULT] = res[i][0]
-                        edt_df.at[i, COL_LOG_ROW] = res[i][1] # Cập nhật Log Row
-                
-                # Lưu lại kết quả vào Google Sheet (bao gồm Log Row mới)
+                    if i in res: edt_df.at[i, COL_RESULT] = res[i][0]; edt_df.at[i, COL_LOG_ROW] = res[i][1]
                 save_block_config_to_sheet(edt_df, sel_blk, master_creds, uid)
                 st_cont.update(label=f"Done! {tot} rows. Log Updated.", state="complete", expanded=False)
             else: st_cont.update(label="Lỗi!", state="error", expanded=False)
-            
             st.cache_data.clear(); time.sleep(1); st.rerun()
 
     with c2:
@@ -949,7 +938,6 @@ def main_ui():
                 blk_bot = assign_bot_to_block(blk)
                 main_st.write(f"⏳ [{idx+1}/{len(all_blocks)}] {blk} -> {blk_bot}")
                 
-                # Logic lấy và chạy rows
                 blk_df = full_df[full_df[COL_BLOCK_NAME] == blk].copy().reset_index(drop=True)
                 rows_to_run = []
                 for i, r in blk_df.iterrows():
@@ -959,14 +947,11 @@ def main_ui():
                 if rows_to_run:
                     ok, res, tot = process_pipeline_mixed(rows_to_run, uid, blk, main_st, forced_bot=blk_bot)
                     total += len(rows_to_run)
-                    
-                    # [V108] Cập nhật Log Row cho từng Block sau khi chạy xong
                     if isinstance(res, dict):
                         for i, r in blk_df.iterrows():
                             if i in res:
                                 blk_df.at[i, COL_RESULT] = res[i][0]
                                 blk_df.at[i, COL_LOG_ROW] = res[i][1]
-                        # Lưu ngay trạng thái của block này xuống sheet
                         save_block_config_to_sheet(blk_df, blk, master_creds, uid)
 
             main_st.update(label="Hoàn tất!", state="complete", expanded=False)
@@ -990,6 +975,13 @@ def main_ui():
     logs = fetch_activity_logs(master_creds, 50)
     if not logs.empty: st.dataframe(logs, use_container_width=True, hide_index=True)
 
+    flush_logs(master_creds, force=True)
+    st.divider(); st.caption("Logs")
+    if st.button("Refresh Logs"): st.cache_data.clear()
+    logs = fetch_activity_logs(master_creds, 50)
+    if not logs.empty: st.dataframe(logs, use_container_width=True, hide_index=True)
+
 if __name__ == "__main__":
     main_ui()
+
 
