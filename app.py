@@ -487,20 +487,40 @@ def fetch_data_v4(row_config, bot_creds, target_headers=None, status_container=N
     except Exception as e: return None, sheet_id, f"Lỗi tải: {str(e)}"
 
 def get_rows_to_delete_dynamic(wks, keys_to_delete, log_container):
-    all_values = safe_api_call(wks.get_all_values)
-    if not all_values: return []
-    headers = all_values[0]
-    try: 
-        # Chỉ check 3 key chính để xóa (Time không dùng để định danh xóa)
-        idx_link = headers.index(SYS_COL_LINK); idx_sheet = headers.index(SYS_COL_SHEET); idx_month = headers.index(SYS_COL_MONTH)
-    except ValueError: return [] 
-    rows_to_delete = []
-    for i, row in enumerate(all_values[1:], start=2): 
-        l = row[idx_link].strip() if len(row) > idx_link else ""
-        s = row[idx_sheet].strip() if len(row) > idx_sheet else ""
-        m = row[idx_month].strip() if len(row) > idx_month else ""
-        if (l, s, m) in keys_to_delete: rows_to_delete.append(i)
-    return rows_to_delete
+    """Tìm các dòng trùng khớp với Key (Link + Sheet + Month) để xóa"""
+    try:
+        # Lấy toàn bộ dữ liệu hiện có
+        all_values = safe_api_call(wks.get_all_values)
+        if not all_values or len(all_values) < 2: return []
+        
+        # Lấy header và chuẩn hóa về chữ thường để tìm cột
+        headers = [str(h).strip().lower() for h in all_values[0]]
+        
+        try: 
+            idx_link = headers.index(SYS_COL_LINK.lower())
+            idx_sheet = headers.index(SYS_COL_SHEET.lower())
+            idx_month = headers.index(SYS_COL_MONTH.lower())
+        except ValueError:
+            # Nếu không tìm thấy cột hệ thống thì không dám xóa bừa
+            return [] 
+
+        rows_to_delete = []
+        # Quét từ dòng dữ liệu (dòng 2 trở đi)
+        for i, row in enumerate(all_values[1:], start=2): 
+            # Lấy giá trị các cột định danh
+            l = row[idx_link].strip() if len(row) > idx_link else ""
+            s = row[idx_sheet].strip() if len(row) > idx_sheet else ""
+            m = row[idx_month].strip() if len(row) > idx_month else ""
+            
+            # Kiểm tra xem dòng này có thuộc các khối cần Ghi Đè không
+            # keys_to_delete là tập hợp các tuple: (Link, Sheet, Month)
+            if (l, s, m) in keys_to_delete: 
+                rows_to_delete.append(i)
+                
+        return rows_to_delete
+    except Exception as e:
+        print(f"Lỗi tìm dòng xóa: {e}")
+        return []
 
 def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
     if not row_indices: return
@@ -1014,6 +1034,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
