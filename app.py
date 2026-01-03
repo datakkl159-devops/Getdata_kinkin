@@ -525,70 +525,92 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, bot_creds, 
         if not target_id: return False, "Link lỗi", {}, []
         sh = get_sh_with_retry(bot_creds, target_id)
         real_sheet_name = str(target_sheet_name).strip() or "Tong_Hop_Data"
-        log_container.write(f"📂 Đích: ...{target_link[-10:]} | Sheet: {real_sheet_name}")
         
+        # 1. Kết nối Sheet
         all_titles = [s.title for s in safe_api_call(sh.worksheets)]
         if real_sheet_name in all_titles: wks = sh.worksheet(real_sheet_name)
-        else: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20); log_container.write(f"✨ Tạo mới sheet: {real_sheet_name}")
+        else: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
         
-        df_new_all = pd.DataFrame()
-        for df, _, _, _ in tasks_list: df_new_all = pd.concat([df_new_all, df], ignore_index=True)
-        if df_new_all.empty: return True, "No Data", {}, []
-
+        # 2. Chuẩn bị Header (Nếu chưa có)
         existing_headers = safe_api_call(wks.row_values, 1)
         if not existing_headers:
-            final_headers = df_new_all.columns.tolist()
+            if not tasks_list or tasks_list[0][0].empty: return True, "No Data", {}, []
+            first_df = tasks_list[0][0]
+            final_headers = first_df.columns.tolist()
             wks.update(range_name="A1", values=[final_headers])
             existing_headers = final_headers
-            log_container.write("🆕 Tạo Header mới.")
         else:
             updated = existing_headers.copy(); added = False
-            # [V108] Đảm bảo có đủ 4 cột hệ thống
             for col in [SYS_COL_LINK, SYS_COL_SHEET, SYS_COL_MONTH, SYS_COL_TIME]:
                 if col not in updated: updated.append(col); added = True
-            if added: wks.update(range_name="A1", values=[updated]); existing_headers = updated; log_container.write("➕ Cập nhật cột hệ thống.")
+            if added: 
+                wks.update(range_name="A1", values=[updated])
+                existing_headers = updated
 
-        df_aligned = pd.DataFrame()
-        for col in existing_headers:
-            if col in df_new_all.columns: df_aligned[col] = df_new_all[col]
-            else: df_aligned[col] = ""
-        
+        # 3. Phân loại task Ghi Đè / Ghi Nối Tiếp
+        final_df_to_write = pd.DataFrame()
         keys_to_delete = set()
-        for df, _, _, w_mode in tasks_list:
-            if w_mode == "Ghi Đè" and not df.empty:
-                l = str(df[SYS_COL_LINK].iloc[0]).strip()
-                s = str(df[SYS_COL_SHEET].iloc[0]).strip()
-                m = str(df[SYS_COL_MONTH].iloc[0]).strip()
-                keys_to_delete.add((l, s, m))
         
+        # Lấy dòng cuối hiện tại để làm mốc log (mang tính tương đối)
+        current_cursor = len(safe_api_call(wks.get_all_values)) + 1 
+
+        for df, src_link, row_idx, w_mode in tasks_list:
+            if df.empty: continue
+            
+            # --- LOGIC MỚI THEO YÊU CẦU ---
+            
+            if w_mode == "Ghi Đè":
+                # Lấy key định danh để tìm và xóa dòng cũ
+                l_key = str(df[SYS_COL_LINK].iloc[0]).strip()
+                s_key = str(df[SYS_COL_SHEET].iloc[0]).strip()
+                m_key = str(df[SYS_COL_MONTH].iloc[0]).strip()
+                keys_to_delete.add((l_key, s_key, m_key))
+                
+                # Sau khi xóa xong sẽ ghi mới xuống dưới
+                final_df_to_write = pd.concat([final_df_to_write, df], ignore_index=True)
+                
+                count = len(df)
+                result_map[row_idx] = ("Thành công (Ghi đè)", f"Append {count}", count)
+
+            elif w_mode == "Ghi Nối Tiếp":
+                # KHÔNG KIỂM TRA TRÙNG - Cứ thế ghi tiếp
+                final_df_to_write = pd.concat([final_df_to_write, df], ignore_index=True)
+                
+                count = len(df)
+                result_map[row_idx] = ("Thành công (Nối tiếp)", f"Append {count}", count)
+
+        # 4. Thực hiện Xóa (Chỉ dành cho Ghi Đè)
+        # Bước này sẽ xóa dòng cũ -> Google tự đẩy dòng dưới lên -> Làm gọn file trước khi ghi mới
         if keys_to_delete:
-            log_container.write(f"🔍 Quét dữ liệu cũ (Ghi Đè)...")
+            log_container.write(f"🔍 Đang quét dữ liệu cũ để xóa (Ghi Đè)...")
             rows_to_del = get_rows_to_delete_dynamic(wks, keys_to_delete, log_container)
             if rows_to_del:
-                log_container.write(f"✂️ Xóa {len(rows_to_del)} dòng cũ...")
+                log_container.write(f"✂️ Đang xóa {len(rows_to_del)} dòng cũ...")
                 batch_delete_rows(sh, wks.id, rows_to_del, log_container)
-                log_container.write("✅ Đã xóa xong. Đang cập nhật index...")
-                time.sleep(2) 
-        
-        current_data = safe_api_call(wks.get_all_values)
-        start_row = (len(current_data) + 1) if current_data else 1
-        
-        log_container.write(f"🚀 Ghi {len(df_aligned)} dòng mới (từ dòng {start_row})...")
-        chunk_size = 5000
-        new_vals = df_aligned.fillna('').values.tolist()
-        for i in range(0, len(new_vals), chunk_size):
-            safe_api_call(wks.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
-            time.sleep(1)
+                log_container.write("✅ Đã xóa xong. Dữ liệu bên dưới đã được đẩy lên.")
+                time.sleep(3) # Đợi Google cập nhật lại index sau khi xóa
 
-        current_cursor = int(start_row)
-        for df, src_link, r_idx, w_mode in tasks_list:
-            count = len(df); rng_str = "0 dòng"
-            if count > 0:
-                end = current_cursor + count - 1; rng_str = f"{current_cursor} - {end}"; current_cursor += count
-            result_map[r_idx] = ("Thành công", rng_str, count)
-            debug_data.append({"File": src_link[-10:], "Mode": w_mode, "Start": current_cursor - count, "End": end if count >0 else 0, "Range Log": rng_str})
+        # 5. Thực hiện Ghi (Append xuống đáy)
+        # Dù là Ghi Đè hay Nối Tiếp, sau khi (có thể) xóa xong, ta đều ghi mới xuống cuối cùng
+        if not final_df_to_write.empty:
+            # Sắp xếp cột cho khớp với file đích
+            df_aligned = pd.DataFrame()
+            for col in existing_headers:
+                df_aligned[col] = final_df_to_write[col] if col in final_df_to_write.columns else ""
             
-        return True, f"Cập nhật {len(df_aligned)} dòng", result_map, debug_data
+            log_container.write(f"🚀 Đang ghi thêm {len(df_aligned)} dòng mới xuống cuối file...")
+            
+            chunk_size = 5000
+            new_vals = df_aligned.fillna('').values.tolist()
+            for i in range(0, len(new_vals), chunk_size):
+                safe_api_call(wks.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
+                time.sleep(1)
+        else:
+            if not result_map:
+                log_container.info("ℹ️ Không có dữ liệu mới để ghi.")
+
+        return True, "Hoàn tất", result_map, debug_data
+
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}", {}, []
 
 # --- CHECK PERMISSION ---
@@ -992,6 +1014,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
