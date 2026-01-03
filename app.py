@@ -487,37 +487,69 @@ def fetch_data_v4(row_config, bot_creds, target_headers=None, status_container=N
     except Exception as e: return None, sheet_id, f"Lỗi tải: {str(e)}"
 
 def get_rows_to_delete_dynamic(wks, keys_to_delete, log_container):
-    """Quét toàn bộ sheet để tìm các dòng cần xóa theo Key (Link+Sheet+Month)"""
+    """
+    V110.1: Quét toàn bộ sheet (Deep Scan) để tìm dòng cần xóa.
+    Khắc phục lỗi dừng quét khi gặp header lặp lại hoặc dòng trống giữa chừng.
+    """
     try:
-        # Lấy toàn bộ dữ liệu hiện có
+        # 1. Lấy toàn bộ dữ liệu thô (List of Lists) - Cách nhanh nhất
         all_values = safe_api_call(wks.get_all_values)
         if not all_values or len(all_values) < 2: return []
         
-        # Tìm index các cột hệ thống (Không phân biệt hoa thường)
-        headers = [str(h).strip().lower() for h in all_values[0]]
-        try: 
+        # 2. Tìm dòng tiêu đề CHÍNH (thường là dòng 1) để xác định vị trí cột
+        # Chúng ta chỉ tìm tiêu đề ở 10 dòng đầu tiên để tránh nhầm lẫn
+        header_row_idx = -1
+        headers = []
+        
+        for i in range(min(10, len(all_values))):
+            row_lower = [str(c).strip().lower() for c in all_values[i]]
+            if SYS_COL_LINK.lower() in row_lower and SYS_COL_SHEET.lower() in row_lower:
+                header_row_idx = i
+                headers = row_lower
+                break
+        
+        if header_row_idx == -1:
+            if log_container: log_container.warning("⚠️ Không tìm thấy dòng tiêu đề hệ thống (Src_Link...). Không thể xóa.")
+            return []
+
+        # 3. Xác định chỉ số cột (Index)
+        try:
             idx_link = headers.index(SYS_COL_LINK.lower())
             idx_sheet = headers.index(SYS_COL_SHEET.lower())
             idx_month = headers.index(SYS_COL_MONTH.lower())
         except ValueError:
-            # Nếu không tìm thấy cột hệ thống thì không xóa được -> Bỏ qua
-            return [] 
+            return []
 
         rows_to_delete = []
-        # Duyệt từ dòng 2 (bỏ header)
-        for i, row in enumerate(all_values[1:], start=2): 
-            # Lấy giá trị từng ô (xử lý an toàn nếu dòng thiếu cột)
-            l = row[idx_link].strip() if len(row) > idx_link else ""
-            s = row[idx_sheet].strip() if len(row) > idx_sheet else ""
-            m = row[idx_month].strip() if len(row) > idx_month else ""
+        
+        # 4. QUÉT TOÀN BỘ (Deep Scan) từ ngay sau dòng header chính
+        # Không dùng break, quét đến tận dòng cuối cùng
+        total_rows = len(all_values)
+        
+        for i in range(header_row_idx + 1, total_rows):
+            row = all_values[i]
             
-            # Nếu bộ 3 giá trị này khớp với bất kỳ key nào trong danh sách cần xóa
-            if (l, s, m) in keys_to_delete: 
-                rows_to_delete.append(i)
+            # Xử lý an toàn nếu dòng dữ liệu bị thiếu cột (ngắn hơn header)
+            if len(row) <= max(idx_link, idx_sheet, idx_month):
+                continue # Bỏ qua dòng lỗi format
                 
+            # Lấy giá trị và làm sạch (strip)
+            val_link = str(row[idx_link]).strip()
+            val_sheet = str(row[idx_sheet]).strip()
+            val_month = str(row[idx_month]).strip()
+            
+            # Kiểm tra: Nếu dòng này là một dòng Header lặp lại (do copy paste cũ)
+            # Thì nó sẽ có giá trị là "Src_Link", "Src_Sheet"... -> Không khớp Key (URL) -> Không bị xóa
+            # Nếu bạn muốn xóa luôn cả dòng header thừa đó, hãy báo tôi.
+            # Hiện tại logic là: Chỉ xóa dòng có DỮ LIỆU trùng khớp.
+            
+            if (val_link, val_sheet, val_month) in keys_to_delete:
+                rows_to_delete.append(i + 1) # +1 vì gspread dùng index bắt đầu từ 1
+
         return rows_to_delete
+
     except Exception as e:
-        print(f"Lỗi tìm dòng xóa: {e}")
+        print(f"Lỗi Deep Scan: {e}")
         return []
 
 def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
@@ -1041,6 +1073,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
