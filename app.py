@@ -487,33 +487,31 @@ def fetch_data_v4(row_config, bot_creds, target_headers=None, status_container=N
     except Exception as e: return None, sheet_id, f"Lỗi tải: {str(e)}"
 
 def get_rows_to_delete_dynamic(wks, keys_to_delete, log_container):
-    """Tìm các dòng trùng khớp với Key (Link + Sheet + Month) để xóa"""
+    """Quét toàn bộ sheet để tìm các dòng cần xóa theo Key (Link+Sheet+Month)"""
     try:
         # Lấy toàn bộ dữ liệu hiện có
         all_values = safe_api_call(wks.get_all_values)
         if not all_values or len(all_values) < 2: return []
         
-        # Lấy header và chuẩn hóa về chữ thường để tìm cột
+        # Tìm index các cột hệ thống (Không phân biệt hoa thường)
         headers = [str(h).strip().lower() for h in all_values[0]]
-        
         try: 
             idx_link = headers.index(SYS_COL_LINK.lower())
             idx_sheet = headers.index(SYS_COL_SHEET.lower())
             idx_month = headers.index(SYS_COL_MONTH.lower())
         except ValueError:
-            # Nếu không tìm thấy cột hệ thống thì không dám xóa bừa
+            # Nếu không tìm thấy cột hệ thống thì không xóa được -> Bỏ qua
             return [] 
 
         rows_to_delete = []
-        # Quét từ dòng dữ liệu (dòng 2 trở đi)
+        # Duyệt từ dòng 2 (bỏ header)
         for i, row in enumerate(all_values[1:], start=2): 
-            # Lấy giá trị các cột định danh
+            # Lấy giá trị từng ô (xử lý an toàn nếu dòng thiếu cột)
             l = row[idx_link].strip() if len(row) > idx_link else ""
             s = row[idx_sheet].strip() if len(row) > idx_sheet else ""
             m = row[idx_month].strip() if len(row) > idx_month else ""
             
-            # Kiểm tra xem dòng này có thuộc các khối cần Ghi Đè không
-            # keys_to_delete là tập hợp các tuple: (Link, Sheet, Month)
+            # Nếu bộ 3 giá trị này khớp với bất kỳ key nào trong danh sách cần xóa
             if (l, s, m) in keys_to_delete: 
                 rows_to_delete.append(i)
                 
@@ -1043,6 +1041,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
