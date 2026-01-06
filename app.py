@@ -1061,18 +1061,40 @@ def main_ui():
                 if checking_creds: check_permissions_ui(edt_df.to_dict('records'), checking_creds, st_chk, uid)
                 else: st_chk.error(f"❌ Không tìm thấy Key cho {assigned_email}. Vui lòng kiểm tra Secrets!")
 
+    # ... (Các đoạn code bên trên giữ nguyên) ...
+
     with c4:
         if st.button("💾 Save Config", use_container_width=True):
-            save_block_config_to_sheet(edt_df, sel_blk, master_creds, uid); st.rerun()
+            # 1. Thực hiện lưu vào Google Sheet
+            save_block_config_to_sheet(edt_df, sel_blk, master_creds, uid)
+            
+            # 2. [QUAN TRỌNG] Ghi Log ngay lập tức trước khi rerun
+            # Nếu không gọi dòng này, st.rerun() sẽ ngắt code và log sẽ bị mất
+            flush_logs(master_creds, force=True)
+            
+            # 3. [QUAN TRỌNG] Xóa Cache
+            # Bắt buộc xóa để lần tải lại sau nó đọc dữ liệu MỚI từ Google Sheet
+            st.cache_data.clear()
+            
+            # 4. Thông báo và Rerun
+            st.toast("✅ Đã lưu cấu hình & Ghi log thành công!", icon="💾")
+            time.sleep(1) # Đợi 1 chút cho user kịp nhìn thấy thông báo
+            st.rerun()
 
-    flush_logs(master_creds, force=True)
+    # --- Phần Log cuối trang (Giữ nguyên hoặc chỉnh lại chút cho chắc chắn) ---
+    # Đoạn này sẽ chạy mỗi khi app load xong (không phải khi ấn nút Save vì nút Save đã rerun rồi)
+    flush_logs(master_creds, force=False) # Chỉ flush nếu buffer đầy
+    
     st.divider(); st.caption("Logs")
-    if st.button("Refresh Logs"): st.cache_data.clear()
+    # Nút refresh logs nhớ thêm key để tránh lỗi Duplicate ID
+    if st.button("Refresh Logs", key="btn_ref_logs_end"): st.cache_data.clear(); st.rerun()
+    
     logs = fetch_activity_logs(master_creds, 50)
     if not logs.empty: st.dataframe(logs, use_container_width=True, hide_index=True)
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
