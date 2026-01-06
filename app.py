@@ -1074,7 +1074,7 @@ def main_ui():
             # BƯỚC 2: Ghi log hành vi (Quan trọng: force_flush=True)
             # Ghi rõ user nào, làm gì, vào thời gian nào
             action_detail = f"Cập nhật cấu hình cho khối: {sel_blk}"
-            log_user_action_buffered(master_creds, uid, "CLICK_SAVE", action_detail, force_flush=True)
+            log_user_action_buffered(master_creds, uid, "Lưu Cấu Hình", action_detail, force_flush=True)
             
             # BƯỚC 3: Xóa Cache và Thông báo
             # Xóa cache để đảm bảo lần tải lại trang sau sẽ thấy dữ liệu mới nhất
@@ -1113,6 +1113,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
