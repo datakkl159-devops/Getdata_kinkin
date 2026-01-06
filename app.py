@@ -1063,37 +1063,57 @@ def main_ui():
 
     # ... (Các đoạn code bên trên giữ nguyên) ...
 
+    # ... (Các cột c1, c2, c3 giữ nguyên) ...
+
     with c4:
         if st.button("💾 Save Config", use_container_width=True):
-            # 1. Thực hiện lưu vào Google Sheet
+            # BƯỚC 1: Lưu dữ liệu cấu hình vào Sheet Config
+            # Hàm này đã có logic acquire_lock bên trong
             save_block_config_to_sheet(edt_df, sel_blk, master_creds, uid)
             
-            # 2. [QUAN TRỌNG] Ghi Log ngay lập tức trước khi rerun
-            # Nếu không gọi dòng này, st.rerun() sẽ ngắt code và log sẽ bị mất
-            flush_logs(master_creds, force=True)
+            # BƯỚC 2: Ghi log hành vi (Quan trọng: force_flush=True)
+            # Ghi rõ user nào, làm gì, vào thời gian nào
+            action_detail = f"Cập nhật cấu hình cho khối: {sel_blk}"
+            log_user_action_buffered(master_creds, uid, "CLICK_SAVE", action_detail, force_flush=True)
             
-            # 3. [QUAN TRỌNG] Xóa Cache
-            # Bắt buộc xóa để lần tải lại sau nó đọc dữ liệu MỚI từ Google Sheet
+            # BƯỚC 3: Xóa Cache và Thông báo
+            # Xóa cache để đảm bảo lần tải lại trang sau sẽ thấy dữ liệu mới nhất
             st.cache_data.clear()
             
-            # 4. Thông báo và Rerun
-            st.toast("✅ Đã lưu cấu hình & Ghi log thành công!", icon="💾")
-            time.sleep(1) # Đợi 1 chút cho user kịp nhìn thấy thông báo
+            st.toast("✅ Đã lưu cấu hình & Ghi nhận hành vi!", icon="💾")
+            
+            # BƯỚC 4: Rerun
+            # Nghỉ 1 nhịp ngắn để Toast kịp hiện và Gspread kịp đóng kết nối
+            time.sleep(1.0) 
             st.rerun()
 
-    # --- Phần Log cuối trang (Giữ nguyên hoặc chỉnh lại chút cho chắc chắn) ---
-    # Đoạn này sẽ chạy mỗi khi app load xong (không phải khi ấn nút Save vì nút Save đã rerun rồi)
-    flush_logs(master_creds, force=False) # Chỉ flush nếu buffer đầy
+    # --- PHẦN HIỂN THỊ LOG Ở CUỐI TRANG ---
+    # Đảm bảo flush những log còn sót lại trong buffer (nếu có)
+    flush_logs(master_creds, force=False) 
     
-    st.divider(); st.caption("Logs")
-    # Nút refresh logs nhớ thêm key để tránh lỗi Duplicate ID
-    if st.button("Refresh Logs", key="btn_ref_logs_end"): st.cache_data.clear(); st.rerun()
+    st.divider()
+    st.caption("Logs hành vi hệ thống")
     
-    logs = fetch_activity_logs(master_creds, 50)
-    if not logs.empty: st.dataframe(logs, use_container_width=True, hide_index=True)
+    # Thêm key="refresh_logs_bottom" để tránh lỗi Duplicate Widget ID với nút Reload ở sidebar
+    if st.button("Refresh Logs", key="refresh_logs_bottom"): 
+        st.cache_data.clear()
+        st.rerun()
+    
+    # Tải và hiển thị log
+    try:
+        logs = fetch_activity_logs(master_creds, 50)
+        if not logs.empty: 
+            st.dataframe(logs, use_container_width=True, hide_index=True)
+        else:
+            st.info("Chưa có dữ liệu log hành vi.")
+    except Exception as e:
+        st.error(f"Không thể tải logs: {str(e)}")
+
+# if __name__ == "__main__": ... (Giữ nguyên)
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
