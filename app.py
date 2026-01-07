@@ -279,19 +279,10 @@ def show_guide_popup():
     | `<=` | Nhỏ hơn hoặc bằng | `Tuoi <= 18` |
     | `contains` | Chứa từ khóa | `Dia_chi contains 'Hà Nội'` |
 
-    #### 💡 Ví dụ cho từng loại dữ liệu:
-    * **1. Lọc Số (Viết số bình thường):**
-        * Lấy doanh thu lớn hơn 1 triệu: `Doanh_thu > 1000000`
-        * Lấy số lượng bằng 0: `So_luong == 0`
-    
-    * **2. Lọc Chữ/Văn bản (Phải để trong dấu nháy đơn ' '):**
-        * Lấy nhân viên tên Lan: `Ten == 'Lan'`
-        * Lấy những người họ Nguyễn (chứa chữ Nguyễn): `Ho_Ten contains 'Nguyễn'`
-        * Lọc trạng thái khác Hủy: `Trang_thai != 'Hủy'`
-
-    * **3. Lọc Ngày tháng (Phải để trong dấu nháy đơn ' '):**
-        * Lấy đơn hàng sau ngày 01/01/2025: `Ngay_dat > '01/01/2025'`
-        * Lấy đúng ngày sinh nhật: `Ngay_sinh == '15/08/1990'`
+    #### 💡 Ví dụ cơ bản:
+    * **1. Lọc Số:** `Doanh_thu > 1000000` hoặc `So_luong == 0`
+    * **2. Lọc Chữ (Dùng nháy đơn):** `Ten == 'Lan'` hoặc `Trang_thai != 'Hủy'`
+    * **3. Lọc Ngày (Dùng nháy đơn):** `Ngay_dat > '01/01/2025'`
     
     #### 🌟 CÁC TRƯỜNG HỢP ĐẶC BIỆT (Lọc 2-3 Giá Trị)
     Đây là phần quan trọng nhất để lọc dữ liệu nâng cao:
@@ -311,8 +302,7 @@ def show_guide_popup():
     1. **Dấu ngăn cách:** Dấu `;` nghĩa là **VÀ** (Phải thỏa mãn cả hai).
     2. **Dấu gạch đứng:** Dấu `|` (trên phím Enter) nghĩa là **HOẶC** (Cái này hoặc cái kia).
     3. **Dấu nháy:** Chữ và Ngày tháng bắt buộc để trong dấu nháy đơn `' '`.
-    """)
-    ---
+
     ---
     ### 4. Logic Điền Dữ Liệu (Khi vào File Đích)
     Đây là cách Tool xử lý khi đổ dữ liệu vào File Đích của bạn:
@@ -1184,6 +1174,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
