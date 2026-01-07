@@ -6,7 +6,7 @@ import time
 import requests 
 import traceback 
 import re
-from datetime import datetime, timedelta # Thêm timedelta để trừ ngày
+from datetime import datetime, timedelta
 import pytz
 from google.oauth2 import service_account
 from gspread_dataframe import get_as_dataframe
@@ -22,8 +22,10 @@ SHEET_ID = os.environ.get("HISTORY_SHEET_ID")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
+# Tên các Sheet Log
 SHEET_CONFIG_NAME = "luu_cau_hinh"
-SHEET_LOG_NAME = "log_lanthucthi"
+SHEET_LOG_NAME = "log_lanthucthi"  # Log chi tiết kỹ thuật
+SHEET_BEHAVE_NAME = "log_hanh_vi"  # Log hành vi tổng quan (MỚI)
 SHEET_SYS_CONFIG = "sys_config"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
@@ -80,32 +82,38 @@ def extract_id(url):
     try: return url.split("/d/")[1].split("/")[0]
     except: return None
 
+# --- [NEW] HÀM GHI LOG HÀNH VI (log_hanh_vi) ---
+def write_behavior_log(gc, action, target, detail, status="Completed"):
+    """Ghi log tổng quan vào sheet log_hanh_vi"""
+    try:
+        sh = gc.open_by_key(SHEET_ID)
+        try: wks = sh.worksheet(SHEET_BEHAVE_NAME)
+        except: wks = sh.add_worksheet(SHEET_BEHAVE_NAME, 1000, 10)
+        
+        now_str = datetime.now(TZ_VN).strftime("%d/%m/%Y %H:%M:%S")
+        # Cấu trúc cột: Thời gian | User | Hành động | Đối tượng | Chi tiết | Trạng thái
+        row_data = [now_str, "Auto_Runner", action, target, detail, status]
+        
+        wks.append_row(row_data)
+    except Exception as e:
+        print(f"Không ghi được log hành vi: {e}")
+
 # --- 2. XỬ LÝ NGÀY ĐỘNG (TODAY-1) ---
 def parse_dynamic_date(val_str):
-    """Biến đổi TODAY-1 thành ngày cụ thể (datetime)"""
     if not isinstance(val_str, str): return val_str
-    
     val_upper = val_str.strip().upper().replace(" ", "").replace("'", "").replace('"', "")
-    now = datetime.now(TZ_VN).replace(hour=0, minute=0, second=0, microsecond=0) # Lấy 0h sáng hôm nay
+    now = datetime.now(TZ_VN).replace(hour=0, minute=0, second=0, microsecond=0)
     
-    # 1. Xử lý TODAY() hoặc TODAY
     if "TODAY" in val_upper:
-        # Xóa chữ TODAY và () để lấy phần phép tính
         calc_part = val_upper.replace("TODAY()", "").replace("TODAY", "")
-        
-        # Nếu rỗng -> Là TODAY
         if not calc_part: return now
-        
-        # Nếu có phép trừ/cộng (VD: -1, +1)
         try:
-            days = int(calc_part) # Python hiểu -1 là số âm
+            days = int(calc_part)
             return now + timedelta(days=days)
         except: pass
 
-    # 2. Xử lý YESTERDAY
     if val_upper == "YESTERDAY": return now - timedelta(days=1)
-    
-    return val_str # Trả về nguyên gốc nếu không phải biến động
+    return val_str
 
 # --- 3. BỘ LỌC THÔNG MINH ---
 def apply_smart_filter(df, filter_str):
@@ -123,11 +131,7 @@ def apply_smart_filter(df, filter_str):
         parts = fs.split(op, 1)
         col_raw = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
         val_raw = parts[1].strip()
-        
-        # [V9 UPDATE] Xử lý biến ngày động trước khi lọc
         val_resolved = parse_dynamic_date(val_raw)
-        
-        # Làm sạch giá trị chuỗi
         val_clean = val_raw[1:-1] if (isinstance(val_raw, str) and (val_raw.startswith("'") or val_raw.startswith('"'))) else val_raw
         
         real_col = next((c for c in current_df.columns if str(c).lower() == col_raw.lower()), None)
@@ -138,35 +142,22 @@ def apply_smart_filter(df, filter_str):
             if op == " contains ": 
                 current_df = current_df[series.astype(str).str.contains(val_clean, case=False, na=False)]
             else:
-                is_dt = False
-                v_dt = None
-                
-                # Check 1: Nếu giá trị so sánh là datetime (do hàm parse_dynamic_date trả về)
+                is_dt = False; v_dt = None
                 if isinstance(val_resolved, datetime):
-                    is_dt = True
-                    v_dt = pd.to_datetime(val_resolved)
+                    is_dt = True; v_dt = pd.to_datetime(val_resolved)
                 else:
-                    # Check 2: Thử parse string thường
                     try: 
                         s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
                         v_dt_try = pd.to_datetime(val_clean, dayfirst=True)
-                        if s_dt.notna().any() and pd.notna(v_dt_try): 
-                            is_dt = True
-                            v_dt = v_dt_try
+                        if s_dt.notna().any() and pd.notna(v_dt_try): is_dt = True; v_dt = v_dt_try
                     except: pass
                 
-                # Check Số
                 is_num = False
                 if not is_dt:
-                    try: 
-                        s_num = pd.to_numeric(series, errors='coerce')
-                        v_num = float(val_clean)
-                        is_num = True
+                    try: s_num = pd.to_numeric(series, errors='coerce'); v_num = float(val_clean); is_num = True
                     except: pass
                 
-                # THỰC HIỆN LỌC
                 if is_dt:
-                    # Chuyển cột series sang datetime để so sánh
                     s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
                     if op==">": current_df=current_df[s_dt>v_dt]
                     elif op=="<": current_df=current_df[s_dt<v_dt]
@@ -182,9 +173,7 @@ def apply_smart_filter(df, filter_str):
                     elif op in ["=","=="]: current_df=current_df[s_num==v_num]
                     elif op=="!=": current_df=current_df[s_num!=v_num]
                 else:
-                    # So sánh chuỗi
-                    s_str = series.astype(str).str.strip()
-                    val_str_cmp = str(val_clean)
+                    s_str = series.astype(str).str.strip(); val_str_cmp = str(val_clean)
                     if op==">": current_df=current_df[s_str>val_str_cmp]
                     elif op=="<": current_df=current_df[s_str<val_str_cmp]
                     elif op==">=": current_df=current_df[s_str>=val_str_cmp]
@@ -314,13 +303,12 @@ def get_jobs_to_run(gc_master):
         return jobs
     except Exception as e: print(f"Lỗi tìm việc: {e}"); return []
 
-# --- 6. XỬ LÝ CHÍNH (5 BOT + FILTER NGÀY) ---
+# --- 6. XỬ LÝ CHÍNH (5 BOT + FILTER + HEADER + WRITE) ---
 def process_row_multi_bot(row):
     sid = extract_id(row['Link dữ liệu lấy dữ liệu'])
     tid = extract_id(row['Link dữ liệu đích'])
     if not sid or not tid: return "Lỗi Link", 0
 
-    # 1. Kết nối nguồn (Biệt đội 5 Bot)
     sh_src = None; active_gc = None
     
     for i in range(len(MY_BOT_LIST)):
@@ -329,7 +317,7 @@ def process_row_multi_bot(row):
             if not c: continue
             gc = gspread.authorize(c)
             temp_sh = gc.open_by_key(sid)
-            _ = temp_sh.title # Check kỹ
+            _ = temp_sh.title
             sh_src = temp_sh; active_gc = gc 
             break 
         except Exception: continue
@@ -337,7 +325,6 @@ def process_row_multi_bot(row):
     if not sh_src: return "Lỗi: 5 Bot đều không vào được Nguồn", 0
 
     try:
-        # 2. Lấy dữ liệu
         ws_name = row['Tên sheet nguồn dữ liệu gốc']
         try: ws_src = sh_src.worksheet(ws_name) if ws_name else sh_src.sheet1
         except: return f"Lỗi: Không tìm thấy sheet '{ws_name}'", 0
@@ -345,7 +332,6 @@ def process_row_multi_bot(row):
         raw_data = safe_api_call(ws_src.get_all_values)
         if not raw_data: return "Sheet trắng", 0
 
-        # 3. Cắt cột
         data_range = str(row.get('Vùng lấy dữ liệu', '')).strip().upper()
         if ":" in data_range and len(data_range) < 10:
             try:
@@ -356,7 +342,6 @@ def process_row_multi_bot(row):
         
         if not raw_data: return "Lỗi cắt vùng", 0
 
-        # DF
         headers = deduplicate_headers(raw_data[0])
         body = []
         num_cols = len(headers)
@@ -366,26 +351,22 @@ def process_row_multi_bot(row):
         
         df = pd.DataFrame(body, columns=headers)
         
-        # 4. LỌC THÔNG MINH (DATE SUPPORT)
         filter_cond = str(row.get('Dieu_Kien_Loc', '')).strip() 
         if filter_cond and filter_cond.lower() != 'nan':
             df = apply_smart_filter(df, filter_cond)
         
         if df.empty: return "Không có dữ liệu sau lọc", 0
 
-        # 5. Header
         h_val = str(row.get('Lay_Header', 'FALSE')).strip().upper()
         if h_val == 'TRUE':
             header_df = pd.DataFrame([df.columns.tolist()], columns=df.columns)
             df = pd.concat([header_df, df], ignore_index=True)
 
-        # Cột hệ thống
         df['Src_Link'] = row['Link dữ liệu lấy dữ liệu']
         df['Src_Sheet'] = row['Tên sheet nguồn dữ liệu gốc']
         df['Month'] = row['Tháng']
         df['Thời điểm ghi'] = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
-        # 6. Ghi đích
         sh_tgt = safe_api_call(active_gc.open_by_key, tid)
         if not sh_tgt: return "Lỗi: Không vào được Đích", 0
 
@@ -444,9 +425,14 @@ if __name__ == "__main__":
                     stt, cnt, "Auto", blk
                 ])
             
+            # Ghi Log kỹ thuật
             if log_ents: 
                 try: sh.worksheet(SHEET_LOG_NAME).append_rows(log_ents)
                 except: pass
+            
+            # [MỚI] GHI LOG HÀNH VI (Chốt sổ Block)
+            write_behavior_log(gc_master, "Chạy Tự Động", blk, f"Đã xử lý {total} dòng", "Completed")
+            
             success_log.append(f"• <b>{blk}</b>: {total} dòng")
 
         msg = f"⏰ <b>Xong:</b> {datetime.now(TZ_VN).strftime('%H:%M')}\n{chr(10).join(success_log)}"
@@ -455,4 +441,11 @@ if __name__ == "__main__":
     except Exception as e:
         print(traceback.format_exc())
         send_telegram(f"Lỗi Auto: {str(e)}", True)
+        # Ghi log hành vi khi lỗi
+        try:
+            master_creds = get_bot_creds_by_index(0)
+            if master_creds:
+                gc = gspread.authorize(master_creds)
+                write_behavior_log(gc, "Chạy Tự Động", "System", f"Lỗi Fatal: {str(e)[:50]}", "Error")
+        except: pass
         exit(1)
