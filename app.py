@@ -293,17 +293,25 @@ def show_guide_popup():
         * Lấy đơn hàng sau ngày 01/01/2025: `Ngay_dat > '01/01/2025'`
         * Lấy đúng ngày sinh nhật: `Ngay_sinh == '15/08/1990'`
     
-    #### 🌟 Nâng Cao: Lọc Nhiều Giá Trị & Trường Hợp Đặc Biệt
-    Bạn muốn lọc phức tạp hơn? Hãy dùng các mẹo sau:
+    #### 🌟 CÁC TRƯỜNG HỢP ĐẶC BIỆT (Lọc 2-3 Giá Trị)
+    Đây là phần quan trọng nhất để lọc dữ liệu nâng cao:
 
-    | Nhu cầu | Cú pháp (Copy vào cột Dieu_Kien_Loc) | Giải thích |
+    | Nhu cầu | Cú pháp mẫu (Copy vào cột Dieu_Kien_Loc) | Giải thích chi tiết |
     | :--- | :--- | :--- |
-    | **Lọc khoảng (VÀ)** | `Doanh_thu >= 10; Doanh_thu <= 20` | Dùng dấu chấm phẩy **`;`** để ngăn cách các điều kiện. Nghĩa là phải thỏa mãn cả hai. |
-    | **Lọc 1 trong 2 (HOẶC)** | `Phong_ban contains 'Kế toán|Nhân sự'` | Dùng lệnh `contains` và dấu gạch đứng **`|`** (trên phím Enter). Nghĩa là là cái này HOẶC cái kia. |
-    | **Lọc ngày động** | `Ngay_nhap >= 'TODAY-1'` | `TODAY-1` là hôm qua, `TODAY` là hôm nay. Tool tự tính ngày, bạn không cần sửa tay mỗi ngày. |
-    | **Lọc 1 trong 3 mã** | `Ma_NV contains '^A01$|^B02$|^C03$'` | Thêm dấu `^` (đầu) và `$` (cuối) để lấy chính xác mã, không lấy mã gần giống (như A01_New). |
-    | **Lọc loại trừ** | `Trang_thai != 'Hủy'; Trang_thai != 'Lỗi'` | Lấy tất cả trừ Hủy và Lỗi. |
+    | **Lọc 1 trong 2 (HOẶC)** | `Phong_ban contains 'Kế toán|Nhân sự'` | Lấy dòng có chữ Kế toán **HOẶC** Nhân sự. Dùng dấu gạch đứng `|` để nối. |
+    | **Lọc 1 trong 3 (HOẶC)** | `Trang_thai contains 'Chờ|Duyệt|Xong'` | Lấy dòng là Chờ, Duyệt **HOẶC** Xong. |
+    | **Lọc chính xác 3 Mã** | `Ma_NV contains '^A01$|^B02$|^C03$'` | Thêm `^` (đầu) và `$` (cuối) để lấy chính xác mã, không lấy mã gần giống (VD: không lấy A01_New). |
+    | **Lọc số trong khoảng** | `Gia >= 1000; Gia <= 5000` | Dùng dấu chấm phẩy `;` (nghĩa là **VÀ**). Lấy số >= 1000 **VÀ** <= 5000. |
+    | **Lọc 2 điều kiện khác** | `Ton_kho > 0; Trang_thai == 'Done'` | Lấy dòng tồn kho dương **VÀ** đã làm xong. |
+    | **Lọc ngày (Khoảng)** | `Ngay >= '01/01/2025'; Ngay <= '31/01/2025'` | Lấy dữ liệu trong tháng 1. |
+    | **Lọc ngày (Động)** | `Ngay >= 'TODAY-1'` | Lấy từ hôm qua (`TODAY-1`) đến nay (`TODAY`). Tự động nhảy ngày. |
+    | **Lọc loại trừ** | `Trang_thai != 'Hủy'; Trang_thai != 'Lỗi'` | Lấy tất cả, **TRỪ** dòng Hủy và dòng Lỗi. |
 
+    #### 💡 Lưu ý cú pháp:
+    1. **Dấu ngăn cách:** Dấu `;` nghĩa là **VÀ** (Phải thỏa mãn cả hai).
+    2. **Dấu gạch đứng:** Dấu `|` (trên phím Enter) nghĩa là **HOẶC** (Cái này hoặc cái kia).
+    3. **Dấu nháy:** Chữ và Ngày tháng bắt buộc để trong dấu nháy đơn `' '`.
+    """)
     ---
     ---
     ### 4. Logic Điền Dữ Liệu (Khi vào File Đích)
@@ -1176,6 +1184,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
