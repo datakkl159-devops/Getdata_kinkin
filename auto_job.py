@@ -179,7 +179,7 @@ def delete_old_data(wks, link_src, sheet_src, month_src):
             time.sleep(2)
     except: pass
 
-# --- 4. TÌM VIỆC & LỊCH TRÌNH ---
+# --- 4. TÌM VIỆC & LỊCH TRÌNH (FIX LOGIC CHẠY BÙ) ---
 def parse_weekday(day_str):
     map_day = {'T2':0, 'T3':1, 'T4':2, 'T5':3, 'T6':4, 'T7':5, 'CN':6}
     return map_day.get(str(day_str).upper().strip(), -1)
@@ -195,6 +195,13 @@ def check_block_should_run(block_name, sched_df, last_run_time):
     val2 = str(row.get('Thong_So_Phu', '')).strip()
     
     if l_type == "Không chạy": return False, "Đang tắt"
+    
+    # Check đã chạy hôm nay chưa?
+    has_run_today = False
+    if last_run_time and last_run_time.date() == now.date():
+        has_run_today = True
+
+    # 1. Chạy theo phút
     if l_type == "Chạy theo phút":
         if not last_run_time: return True, "Lần đầu"
         try:
@@ -204,14 +211,27 @@ def check_block_should_run(block_name, sched_df, last_run_time):
         
     try: target_hour = int(val1.split(':')[0])
     except: return False, "Lỗi giờ"
-    if now.hour != target_hour: return False, "Sai giờ"
-    if last_run_time and last_run_time.date() == now.date(): return False, "Đã chạy hôm nay"
+    
+    # LOGIC CHẠY BÙ: Nếu giờ hiện tại >= giờ cài đặt VÀ chưa chạy hôm nay -> CHẠY
+    time_ok = now.hour >= target_hour
 
-    if l_type == "Hàng ngày": return True, "Hàng ngày"
+    if l_type == "Hàng ngày":
+        if time_ok and not has_run_today: return True, "Chạy bù/Đúng giờ"
+        if has_run_today: return False, "Đã chạy hôm nay"
+        return False, "Chưa đến giờ"
+
     if l_type == "Hàng tuần":
-        if now.weekday() in [parse_weekday(d) for d in val2.split(',')]: return True, "Đúng thứ"
+        correct_day = now.weekday() in [parse_weekday(d) for d in val2.split(',')]
+        if not correct_day: return False, "Sai thứ"
+        if time_ok and not has_run_today: return True, "Chạy bù/Đúng giờ"
+        return False, "Đã chạy/Chưa đến giờ"
+        
     if l_type == "Hàng tháng":
-        if now.day in [int(d) for d in val2.split(',') if d.strip().isdigit()]: return True, "Đúng ngày"
+        correct_day = now.day in [int(d) for d in val2.split(',') if d.strip().isdigit()]
+        if not correct_day: return False, "Sai ngày"
+        if time_ok and not has_run_today: return True, "Chạy bù/Đúng giờ"
+        return False, "Đã chạy/Chưa đến giờ"
+
     return False, "Không khớp lịch"
 
 def get_jobs_to_run(gc_master):
@@ -246,7 +266,7 @@ def get_jobs_to_run(gc_master):
         return jobs
     except Exception as e: print(f"Lỗi tìm việc: {e}"); return []
 
-# --- 5. XỬ LÝ CHÍNH (FULL TÍNH NĂNG) ---
+# --- 5. XỬ LÝ CHÍNH (FIX LỖI CRASH) ---
 def process_row_multi_bot(row):
     sid = extract_id(row['Link dữ liệu lấy dữ liệu'])
     tid = extract_id(row['Link dữ liệu đích'])
@@ -259,28 +279,31 @@ def process_row_multi_bot(row):
             c = get_bot_creds_by_index(i)
             if not c: continue
             gc = gspread.authorize(c)
-            safe_api_call(gc.open_by_key, sid)
+            safe_api_call(gc.open_by_key, sid) # Test mở file
             active_gc = gc; break
         except: continue
     
     if not active_gc: return "Lỗi: 5 Bot đều bị chặn", 0
 
     try:
-        # 2. Lấy dữ liệu nguồn
+        # 2. Lấy dữ liệu nguồn (FIX LỖI CRASH NONETYPE Ở ĐÂY)
         sh_src = safe_api_call(active_gc.open_by_key, sid)
+        if not sh_src: return "Lỗi: Bot không mở được File Nguồn (Check Share)", 0
+        
         ws_name = row['Tên sheet nguồn dữ liệu gốc']
-        ws_src = sh_src.worksheet(ws_name) if ws_name else sh_src.sheet1
+        try:
+            ws_src = sh_src.worksheet(ws_name) if ws_name else sh_src.sheet1
+        except: return f"Lỗi: Không tìm thấy sheet '{ws_name}'", 0
         
         raw_data = safe_api_call(ws_src.get_all_values)
         if not raw_data: return "Sheet trắng", 0
 
-        # ✅ TÍNH NĂNG: CẮT CỘT (DATA RANGE) VD: A:E
+        # 3. Cắt cột (Slice A:Z)
         data_range = str(row.get('Vùng lấy dữ liệu', '')).strip().upper()
         if ":" in data_range and len(data_range) < 10:
             try:
                 s_char, e_char = data_range.split(":")
                 s_idx = col_name_to_index(s_char); e_idx = col_name_to_index(e_char)
-                # Cắt ngang list (Slice)
                 raw_data = [r[s_idx : e_idx + 1] for r in raw_data]
             except: pass
         
@@ -296,19 +319,18 @@ def process_row_multi_bot(row):
         
         df = pd.DataFrame(body, columns=headers)
         
-        # ✅ TÍNH NĂNG: BỘ LỌC (FILTER)
+        # 4. LỌC (FILTER)
         filter_cond = str(row.get('Dieu_Kien_Loc', '')).strip() 
         if filter_cond and filter_cond.lower() != 'nan':
             df = apply_smart_filter(df, filter_cond)
         
         if df.empty: return "Không có dữ liệu sau lọc", 0
 
-        # ✅ TÍNH NĂNG: LẤY HEADER (TRUE/FALSE)
+        # 5. LẤY HEADER (TRUE/FALSE)
         h_val = str(row.get('Lay_Header', 'FALSE')).strip().upper()
         include_header = (h_val == 'TRUE')
         
         if include_header:
-            # Biến header thành dòng dữ liệu đầu tiên
             header_df = pd.DataFrame([df.columns.tolist()], columns=df.columns)
             df = pd.concat([header_df, df], ignore_index=True)
 
@@ -318,13 +340,15 @@ def process_row_multi_bot(row):
         df['Month'] = row['Tháng']
         df['Thời điểm ghi'] = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
-        # 3. Ghi vào đích
+        # 6. Ghi vào đích
         sh_tgt = safe_api_call(active_gc.open_by_key, tid)
+        if not sh_tgt: return "Lỗi: Không mở được File Đích", 0
+
         t_sheet = row['Tên sheet dữ liệu đích'] or "Tong_Hop_Data"
         try: ws_tgt = sh_tgt.worksheet(t_sheet)
         except: ws_tgt = sh_tgt.add_worksheet(t_sheet, 1000, 20)
         
-        # ✅ TÍNH NĂNG: GHI ĐÈ (XÓA CŨ) VS GHI NỐI TIẾP
+        # LOGIC GHI ĐÈ / NỐI TIẾP
         write_mode = str(row.get('Cach_Ghi', 'Ghi Đè')).strip() 
         
         if write_mode == "Ghi Đè":
