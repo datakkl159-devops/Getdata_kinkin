@@ -30,8 +30,8 @@ MY_BOT_LIST = [
 ]
 
 AUTHORIZED_USERS = {
-    "admin2025": "Admin_Master",
-    "team_hn": "Team_HaNoi",
+    "admin2025": "Sếp Thường",
+    "team_hn": "Huyền KT",
     "team_hcm": "Team_HCM"
 }
 
@@ -1113,6 +1113,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
