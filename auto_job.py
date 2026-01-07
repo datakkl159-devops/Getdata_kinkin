@@ -6,7 +6,7 @@ import time
 import requests 
 import traceback 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta # Thêm timedelta để trừ ngày
 import pytz
 from google.oauth2 import service_account
 from gspread_dataframe import get_as_dataframe
@@ -80,7 +80,34 @@ def extract_id(url):
     try: return url.split("/d/")[1].split("/")[0]
     except: return None
 
-# --- 2. BỘ LỌC THÔNG MINH ---
+# --- 2. XỬ LÝ NGÀY ĐỘNG (TODAY-1) ---
+def parse_dynamic_date(val_str):
+    """Biến đổi TODAY-1 thành ngày cụ thể (datetime)"""
+    if not isinstance(val_str, str): return val_str
+    
+    val_upper = val_str.strip().upper().replace(" ", "").replace("'", "").replace('"', "")
+    now = datetime.now(TZ_VN).replace(hour=0, minute=0, second=0, microsecond=0) # Lấy 0h sáng hôm nay
+    
+    # 1. Xử lý TODAY() hoặc TODAY
+    if "TODAY" in val_upper:
+        # Xóa chữ TODAY và () để lấy phần phép tính
+        calc_part = val_upper.replace("TODAY()", "").replace("TODAY", "")
+        
+        # Nếu rỗng -> Là TODAY
+        if not calc_part: return now
+        
+        # Nếu có phép trừ/cộng (VD: -1, +1)
+        try:
+            days = int(calc_part) # Python hiểu -1 là số âm
+            return now + timedelta(days=days)
+        except: pass
+
+    # 2. Xử lý YESTERDAY
+    if val_upper == "YESTERDAY": return now - timedelta(days=1)
+    
+    return val_str # Trả về nguyên gốc nếu không phải biến động
+
+# --- 3. BỘ LỌC THÔNG MINH ---
 def apply_smart_filter(df, filter_str):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']: return df
     conditions = str(filter_str).split(';')
@@ -96,7 +123,12 @@ def apply_smart_filter(df, filter_str):
         parts = fs.split(op, 1)
         col_raw = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
         val_raw = parts[1].strip()
-        val_clean = val_raw[1:-1] if (val_raw.startswith("'") or val_raw.startswith('"')) else val_raw
+        
+        # [V9 UPDATE] Xử lý biến ngày động trước khi lọc
+        val_resolved = parse_dynamic_date(val_raw)
+        
+        # Làm sạch giá trị chuỗi
+        val_clean = val_raw[1:-1] if (isinstance(val_raw, str) and (val_raw.startswith("'") or val_raw.startswith('"'))) else val_raw
         
         real_col = next((c for c in current_df.columns if str(c).lower() == col_raw.lower()), None)
         if not real_col: continue 
@@ -107,18 +139,35 @@ def apply_smart_filter(df, filter_str):
                 current_df = current_df[series.astype(str).str.contains(val_clean, case=False, na=False)]
             else:
                 is_dt = False
-                try: 
-                    s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
-                    v_dt = pd.to_datetime(val_clean, dayfirst=True)
-                    if s_dt.notna().any(): is_dt = True
-                except: pass
+                v_dt = None
                 
-                is_num = False
-                if not is_dt:
-                    try: s_num = pd.to_numeric(series, errors='coerce'); v_num = float(val_clean); is_num = True
+                # Check 1: Nếu giá trị so sánh là datetime (do hàm parse_dynamic_date trả về)
+                if isinstance(val_resolved, datetime):
+                    is_dt = True
+                    v_dt = pd.to_datetime(val_resolved)
+                else:
+                    # Check 2: Thử parse string thường
+                    try: 
+                        s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
+                        v_dt_try = pd.to_datetime(val_clean, dayfirst=True)
+                        if s_dt.notna().any() and pd.notna(v_dt_try): 
+                            is_dt = True
+                            v_dt = v_dt_try
                     except: pass
                 
+                # Check Số
+                is_num = False
+                if not is_dt:
+                    try: 
+                        s_num = pd.to_numeric(series, errors='coerce')
+                        v_num = float(val_clean)
+                        is_num = True
+                    except: pass
+                
+                # THỰC HIỆN LỌC
                 if is_dt:
+                    # Chuyển cột series sang datetime để so sánh
+                    s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
                     if op==">": current_df=current_df[s_dt>v_dt]
                     elif op=="<": current_df=current_df[s_dt<v_dt]
                     elif op==">=": current_df=current_df[s_dt>=v_dt]
@@ -133,17 +182,19 @@ def apply_smart_filter(df, filter_str):
                     elif op in ["=","=="]: current_df=current_df[s_num==v_num]
                     elif op=="!=": current_df=current_df[s_num!=v_num]
                 else:
+                    # So sánh chuỗi
                     s_str = series.astype(str).str.strip()
-                    if op==">": current_df=current_df[s_str>str(val_clean)]
-                    elif op=="<": current_df=current_df[s_str<str(val_clean)]
-                    elif op==">=": current_df=current_df[s_str>=str(val_clean)]
-                    elif op=="<=": current_df=current_df[s_str<=str(val_clean)]
-                    elif op in ["=","=="]: current_df=current_df[s_str==str(val_clean)]
-                    elif op=="!=": current_df=current_df[s_str!=str(val_clean)]
+                    val_str_cmp = str(val_clean)
+                    if op==">": current_df=current_df[s_str>val_str_cmp]
+                    elif op=="<": current_df=current_df[s_str<val_str_cmp]
+                    elif op==">=": current_df=current_df[s_str>=val_str_cmp]
+                    elif op=="<=": current_df=current_df[s_str<=val_str_cmp]
+                    elif op in ["=","=="]: current_df=current_df[s_str==val_str_cmp]
+                    elif op=="!=": current_df=current_df[s_str!=val_str_cmp]
         except: pass
     return current_df
 
-# --- 3. XÓA DỮ LIỆU CŨ ---
+# --- 4. XÓA DỮ LIỆU CŨ ---
 def delete_old_data(wks, link_src, sheet_src, month_src):
     try:
         all_vals = safe_api_call(wks.get_all_values)
@@ -179,7 +230,7 @@ def delete_old_data(wks, link_src, sheet_src, month_src):
             time.sleep(2)
     except: pass
 
-# --- 4. TÌM VIỆC & LỊCH TRÌNH ---
+# --- 5. TÌM VIỆC & LỊCH TRÌNH ---
 def parse_weekday(day_str):
     map_day = {'T2':0, 'T3':1, 'T4':2, 'T5':3, 'T6':4, 'T7':5, 'CN':6}
     return map_day.get(str(day_str).upper().strip(), -1)
@@ -263,54 +314,38 @@ def get_jobs_to_run(gc_master):
         return jobs
     except Exception as e: print(f"Lỗi tìm việc: {e}"); return []
 
-# --- 5. XỬ LÝ CHÍNH (FIX LỖI CRASH + TÌM BOT CHUẨN) ---
+# --- 6. XỬ LÝ CHÍNH (5 BOT + FILTER NGÀY) ---
 def process_row_multi_bot(row):
     sid = extract_id(row['Link dữ liệu lấy dữ liệu'])
     tid = extract_id(row['Link dữ liệu đích'])
     if not sid or not tid: return "Lỗi Link", 0
 
-    # 1. Kết nối nguồn: THỬ LẦN LƯỢT VÀ GIỮ KẾT NỐI (QUAN TRỌNG)
-    sh_src = None
-    active_gc = None # Bot nào vào được thì dùng luôn cho đích
+    # 1. Kết nối nguồn (Biệt đội 5 Bot)
+    sh_src = None; active_gc = None
     
     for i in range(len(MY_BOT_LIST)):
         try:
-            # Lấy key bot i
             c = get_bot_creds_by_index(i)
             if not c: continue
-            
-            # Thử kết nối
             gc = gspread.authorize(c)
-            # Cố gắng mở file. Nếu mở được -> Gán vào sh_src và THOÁT VÒNG LẶP NGAY
             temp_sh = gc.open_by_key(sid)
-            
-            # Check kỹ: Thử đọc tiêu đề xem có phải object thật không
-            _ = temp_sh.title 
-            
-            # Nếu đến đây không lỗi thì Bot này ngon
-            sh_src = temp_sh
-            active_gc = gc 
-            # print(f"Bot {i} OK") 
+            _ = temp_sh.title # Check kỹ
+            sh_src = temp_sh; active_gc = gc 
             break 
-        except Exception:
-            # print(f"Bot {i} Fail")
-            continue
+        except Exception: continue
     
-    # Nếu chạy hết vòng lặp mà sh_src vẫn None -> Báo lỗi
-    if not sh_src or not active_gc:
-        return "Lỗi: Bot không mở được File Nguồn (Check Share)", 0
+    if not sh_src: return "Lỗi: 5 Bot đều không vào được Nguồn", 0
 
     try:
-        # 2. Lấy dữ liệu nguồn (Đã có sh_src chuẩn từ bước trên)
+        # 2. Lấy dữ liệu
         ws_name = row['Tên sheet nguồn dữ liệu gốc']
-        try:
-            ws_src = sh_src.worksheet(ws_name) if ws_name else sh_src.sheet1
+        try: ws_src = sh_src.worksheet(ws_name) if ws_name else sh_src.sheet1
         except: return f"Lỗi: Không tìm thấy sheet '{ws_name}'", 0
         
         raw_data = safe_api_call(ws_src.get_all_values)
         if not raw_data: return "Sheet trắng", 0
 
-        # 3. Cắt cột (Slice A:Z)
+        # 3. Cắt cột
         data_range = str(row.get('Vùng lấy dữ liệu', '')).strip().upper()
         if ":" in data_range and len(data_range) < 10:
             try:
@@ -321,7 +356,7 @@ def process_row_multi_bot(row):
         
         if not raw_data: return "Lỗi cắt vùng", 0
 
-        # DataFrame
+        # DF
         headers = deduplicate_headers(raw_data[0])
         body = []
         num_cols = len(headers)
@@ -331,17 +366,16 @@ def process_row_multi_bot(row):
         
         df = pd.DataFrame(body, columns=headers)
         
-        # 4. LỌC (FILTER)
+        # 4. LỌC THÔNG MINH (DATE SUPPORT)
         filter_cond = str(row.get('Dieu_Kien_Loc', '')).strip() 
         if filter_cond and filter_cond.lower() != 'nan':
             df = apply_smart_filter(df, filter_cond)
         
         if df.empty: return "Không có dữ liệu sau lọc", 0
 
-        # 5. HEADER
+        # 5. Header
         h_val = str(row.get('Lay_Header', 'FALSE')).strip().upper()
-        include_header = (h_val == 'TRUE')
-        if include_header:
+        if h_val == 'TRUE':
             header_df = pd.DataFrame([df.columns.tolist()], columns=df.columns)
             df = pd.concat([header_df, df], ignore_index=True)
 
@@ -351,9 +385,9 @@ def process_row_multi_bot(row):
         df['Month'] = row['Tháng']
         df['Thời điểm ghi'] = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
-        # 6. Ghi vào đích (Dùng lại Bot active_gc đã vào được nguồn)
+        # 6. Ghi đích
         sh_tgt = safe_api_call(active_gc.open_by_key, tid)
-        if not sh_tgt: return "Lỗi: Bot vào được Nguồn nhưng bị chặn ở Đích", 0
+        if not sh_tgt: return "Lỗi: Không vào được Đích", 0
 
         t_sheet = row['Tên sheet dữ liệu đích'] or "Tong_Hop_Data"
         try: ws_tgt = sh_tgt.worksheet(t_sheet)
