@@ -179,7 +179,7 @@ def delete_old_data(wks, link_src, sheet_src, month_src):
             time.sleep(2)
     except: pass
 
-# --- 4. TÌM VIỆC & LỊCH TRÌNH (FIX LOGIC CHẠY BÙ) ---
+# --- 4. TÌM VIỆC & LỊCH TRÌNH ---
 def parse_weekday(day_str):
     map_day = {'T2':0, 'T3':1, 'T4':2, 'T5':3, 'T6':4, 'T7':5, 'CN':6}
     return map_day.get(str(day_str).upper().strip(), -1)
@@ -196,12 +196,10 @@ def check_block_should_run(block_name, sched_df, last_run_time):
     
     if l_type == "Không chạy": return False, "Đang tắt"
     
-    # Check đã chạy hôm nay chưa?
     has_run_today = False
     if last_run_time and last_run_time.date() == now.date():
         has_run_today = True
 
-    # 1. Chạy theo phút
     if l_type == "Chạy theo phút":
         if not last_run_time: return True, "Lần đầu"
         try:
@@ -212,7 +210,6 @@ def check_block_should_run(block_name, sched_df, last_run_time):
     try: target_hour = int(val1.split(':')[0])
     except: return False, "Lỗi giờ"
     
-    # LOGIC CHẠY BÙ: Nếu giờ hiện tại >= giờ cài đặt VÀ chưa chạy hôm nay -> CHẠY
     time_ok = now.hour >= target_hour
 
     if l_type == "Hàng ngày":
@@ -266,30 +263,45 @@ def get_jobs_to_run(gc_master):
         return jobs
     except Exception as e: print(f"Lỗi tìm việc: {e}"); return []
 
-# --- 5. XỬ LÝ CHÍNH (FIX LỖI CRASH) ---
+# --- 5. XỬ LÝ CHÍNH (FIX LỖI CRASH + TÌM BOT CHUẨN) ---
 def process_row_multi_bot(row):
     sid = extract_id(row['Link dữ liệu lấy dữ liệu'])
     tid = extract_id(row['Link dữ liệu đích'])
     if not sid or not tid: return "Lỗi Link", 0
 
-    # 1. Kết nối nguồn (5 Bot Round-Robin)
-    active_gc = None
+    # 1. Kết nối nguồn: THỬ LẦN LƯỢT VÀ GIỮ KẾT NỐI (QUAN TRỌNG)
+    sh_src = None
+    active_gc = None # Bot nào vào được thì dùng luôn cho đích
+    
     for i in range(len(MY_BOT_LIST)):
         try:
+            # Lấy key bot i
             c = get_bot_creds_by_index(i)
             if not c: continue
+            
+            # Thử kết nối
             gc = gspread.authorize(c)
-            safe_api_call(gc.open_by_key, sid) # Test mở file
-            active_gc = gc; break
-        except: continue
+            # Cố gắng mở file. Nếu mở được -> Gán vào sh_src và THOÁT VÒNG LẶP NGAY
+            temp_sh = gc.open_by_key(sid)
+            
+            # Check kỹ: Thử đọc tiêu đề xem có phải object thật không
+            _ = temp_sh.title 
+            
+            # Nếu đến đây không lỗi thì Bot này ngon
+            sh_src = temp_sh
+            active_gc = gc 
+            # print(f"Bot {i} OK") 
+            break 
+        except Exception:
+            # print(f"Bot {i} Fail")
+            continue
     
-    if not active_gc: return "Lỗi: 5 Bot đều bị chặn", 0
+    # Nếu chạy hết vòng lặp mà sh_src vẫn None -> Báo lỗi
+    if not sh_src or not active_gc:
+        return "Lỗi: Bot không mở được File Nguồn (Check Share)", 0
 
     try:
-        # 2. Lấy dữ liệu nguồn (FIX LỖI CRASH NONETYPE Ở ĐÂY)
-        sh_src = safe_api_call(active_gc.open_by_key, sid)
-        if not sh_src: return "Lỗi: Bot không mở được File Nguồn (Check Share)", 0
-        
+        # 2. Lấy dữ liệu nguồn (Đã có sh_src chuẩn từ bước trên)
         ws_name = row['Tên sheet nguồn dữ liệu gốc']
         try:
             ws_src = sh_src.worksheet(ws_name) if ws_name else sh_src.sheet1
@@ -309,7 +321,7 @@ def process_row_multi_bot(row):
         
         if not raw_data: return "Lỗi cắt vùng", 0
 
-        # Tạo DataFrame ban đầu
+        # DataFrame
         headers = deduplicate_headers(raw_data[0])
         body = []
         num_cols = len(headers)
@@ -326,31 +338,28 @@ def process_row_multi_bot(row):
         
         if df.empty: return "Không có dữ liệu sau lọc", 0
 
-        # 5. LẤY HEADER (TRUE/FALSE)
+        # 5. HEADER
         h_val = str(row.get('Lay_Header', 'FALSE')).strip().upper()
         include_header = (h_val == 'TRUE')
-        
         if include_header:
             header_df = pd.DataFrame([df.columns.tolist()], columns=df.columns)
             df = pd.concat([header_df, df], ignore_index=True)
 
-        # Thêm cột hệ thống
+        # Cột hệ thống
         df['Src_Link'] = row['Link dữ liệu lấy dữ liệu']
         df['Src_Sheet'] = row['Tên sheet nguồn dữ liệu gốc']
         df['Month'] = row['Tháng']
         df['Thời điểm ghi'] = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
-        # 6. Ghi vào đích
+        # 6. Ghi vào đích (Dùng lại Bot active_gc đã vào được nguồn)
         sh_tgt = safe_api_call(active_gc.open_by_key, tid)
-        if not sh_tgt: return "Lỗi: Không mở được File Đích", 0
+        if not sh_tgt: return "Lỗi: Bot vào được Nguồn nhưng bị chặn ở Đích", 0
 
         t_sheet = row['Tên sheet dữ liệu đích'] or "Tong_Hop_Data"
         try: ws_tgt = sh_tgt.worksheet(t_sheet)
         except: ws_tgt = sh_tgt.add_worksheet(t_sheet, 1000, 20)
         
-        # LOGIC GHI ĐÈ / NỐI TIẾP
         write_mode = str(row.get('Cach_Ghi', 'Ghi Đè')).strip() 
-        
         if write_mode == "Ghi Đè":
             delete_old_data(ws_tgt, row['Link dữ liệu lấy dữ liệu'], row['Tên sheet nguồn dữ liệu gốc'], row['Tháng'])
 
