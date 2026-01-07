@@ -292,7 +292,19 @@ def show_guide_popup():
     * **3. Lọc Ngày tháng (Phải để trong dấu nháy đơn ' '):**
         * Lấy đơn hàng sau ngày 01/01/2025: `Ngay_dat > '01/01/2025'`
         * Lấy đúng ngày sinh nhật: `Ngay_sinh == '15/08/1990'`
+    
+    #### 🌟 Nâng Cao: Lọc Nhiều Giá Trị & Trường Hợp Đặc Biệt
+    Bạn muốn lọc phức tạp hơn? Hãy dùng các mẹo sau:
 
+    | Nhu cầu | Cú pháp (Copy vào cột Dieu_Kien_Loc) | Giải thích |
+    | :--- | :--- | :--- |
+    | **Lọc khoảng (VÀ)** | `Doanh_thu >= 10; Doanh_thu <= 20` | Dùng dấu chấm phẩy **`;`** để ngăn cách các điều kiện. Nghĩa là phải thỏa mãn cả hai. |
+    | **Lọc 1 trong 2 (HOẶC)** | `Phong_ban contains 'Kế toán|Nhân sự'` | Dùng lệnh `contains` và dấu gạch đứng **`|`** (trên phím Enter). Nghĩa là là cái này HOẶC cái kia. |
+    | **Lọc ngày động** | `Ngay_nhap >= 'TODAY-1'` | `TODAY-1` là hôm qua, `TODAY` là hôm nay. Tool tự tính ngày, bạn không cần sửa tay mỗi ngày. |
+    | **Lọc 1 trong 3 mã** | `Ma_NV contains '^A01$|^B02$|^C03$'` | Thêm dấu `^` (đầu) và `$` (cuối) để lấy chính xác mã, không lấy mã gần giống (như A01_New). |
+    | **Lọc loại trừ** | `Trang_thai != 'Hủy'; Trang_thai != 'Lỗi'` | Lấy tất cả trừ Hủy và Lỗi. |
+
+    ---
     ---
     ### 4. Logic Điền Dữ Liệu (Khi vào File Đích)
     Đây là cách Tool xử lý khi đổ dữ liệu vào File Đích của bạn:
@@ -1164,6 +1176,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
