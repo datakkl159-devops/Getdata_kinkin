@@ -10,7 +10,7 @@ import numpy as np
 import gc
 from gspread_dataframe import set_with_dataframe, get_as_dataframe
 from gspread.exceptions import APIError
-from datetime import datetime
+from datetime import datetime, timedelta
 from google.oauth2 import service_account
 from collections import defaultdict, Counter
 from st_copy_to_clipboard import st_copy_to_clipboard
@@ -363,33 +363,81 @@ def write_detailed_log(creds, log_data_list):
 # ==========================================
 # 4. CORE ETL
 # ==========================================
+# --- [NEW] HÀM XỬ LÝ NGÀY ĐỘNG ---
+def parse_dynamic_date(val_str):
+    """Biến đổi TODAY-1, YESTERDAY thành ngày cụ thể"""
+    if not isinstance(val_str, str): return val_str
+    
+    # Chuẩn hóa chuỗi (xóa khoảng trắng, dấu nháy)
+    val_upper = val_str.strip().upper().replace(" ", "").replace("'", "").replace('"', "")
+    
+    # Lấy ngày hôm nay (0h sáng) theo giờ VN
+    tz = pytz.timezone('Asia/Ho_Chi_Minh')
+    now = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Xử lý TODAY
+    if "TODAY" in val_upper:
+        calc_part = val_upper.replace("TODAY()", "").replace("TODAY", "")
+        if not calc_part: return now # Là TODAY
+        try:
+            days = int(calc_part) # Python hiểu -1 là trừ 1 ngày
+            return now + timedelta(days=days)
+        except: pass
+
+    # Xử lý YESTERDAY
+    if val_upper == "YESTERDAY": return now - timedelta(days=1)
+    
+    return val_str # Trả về nguyên gốc nếu không phải biến động
+
 def apply_smart_filter_v90(df, filter_str, debug_container=None):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']: return df, None
     conditions = str(filter_str).split(';')
     current_df = df.copy()
     if debug_container: debug_container.markdown(f"**🔍 Lọc: {len(current_df)} dòng gốc**")
+    
     for cond in conditions:
         fs = cond.strip()
         if not fs: continue 
         op_list = [" contains ", "==", "!=", ">=", "<=", ">", "<", "="]
         op = next((o for o in op_list if o in fs), None)
         if not op: return None, f"Lỗi cú pháp: '{fs}'"
-        parts = fs.split(op, 1); col_raw = parts[0].strip().replace("`", "").replace("'", "").replace('"', ""); val_raw = parts[1].strip()
-        val_clean = val_raw[1:-1] if (val_raw.startswith("'") or val_raw.startswith('"')) else val_raw
+        
+        parts = fs.split(op, 1)
+        col_raw = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
+        val_raw = parts[1].strip()
+        
+        # [MỚI] Xử lý ngày động (VD: TODAY-1) trước khi lọc
+        val_resolved = parse_dynamic_date(val_raw)
+        
+        # Làm sạch giá trị chuỗi (bỏ dấu nháy bao quanh)
+        val_clean = val_raw[1:-1] if (isinstance(val_raw, str) and (val_raw.startswith("'") or val_raw.startswith('"'))) else val_raw
         
         real_col = next((c for c in current_df.columns if str(c).lower() == col_raw.lower()), None)
         if not real_col: return None, f"Không tìm thấy cột '{col_raw}'"
         
         try:
             series = current_df[real_col]
-            if op == " contains ": current_df = current_df[series.astype(str).str.contains(val_clean, case=False, na=False)]
+            if op == " contains ": 
+                current_df = current_df[series.astype(str).str.contains(val_clean, case=False, na=False)]
             else:
                 # Logic so sánh
                 is_dt = False
-                try: 
-                    s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce'); v_dt = pd.to_datetime(val_clean, dayfirst=True)
-                    if s_dt.notna().any(): is_dt = True
-                except: pass
+                v_dt = None
+                
+                # Check 1: Nếu giá trị so sánh là datetime (do hàm parse_dynamic_date trả về)
+                if isinstance(val_resolved, datetime):
+                    is_dt = True
+                    # Bỏ múi giờ để so sánh với dữ liệu trong Sheet (thường không có múi giờ)
+                    v_dt = pd.to_datetime(val_resolved).tz_localize(None)
+                else:
+                    # Check 2: Thử parse string thường
+                    try: 
+                        s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
+                        v_dt_try = pd.to_datetime(val_clean, dayfirst=True)
+                        if s_dt.notna().any() and pd.notna(v_dt_try): 
+                            is_dt = True
+                            v_dt = v_dt_try
+                    except: pass
                 
                 is_num = False
                 if not is_dt:
@@ -397,6 +445,8 @@ def apply_smart_filter_v90(df, filter_str, debug_container=None):
                     except: pass
                 
                 if is_dt:
+                    # Chuyển cột series sang datetime
+                    s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
                     if op==">": current_df=current_df[s_dt>v_dt]
                     elif op=="<": current_df=current_df[s_dt<v_dt]
                     elif op==">=": current_df=current_df[s_dt>=v_dt]
@@ -412,16 +462,17 @@ def apply_smart_filter_v90(df, filter_str, debug_container=None):
                     elif op=="!=": current_df=current_df[s_num!=v_num]
                 else:
                     s_str = series.astype(str).str.strip()
-                    if op==">": current_df=current_df[s_str>str(val_clean)]
-                    elif op=="<": current_df=current_df[s_str<str(val_clean)]
-                    elif op==">=": current_df=current_df[s_str>=str(val_clean)]
-                    elif op=="<=": current_df=current_df[s_str<=str(val_clean)]
-                    elif op in ["=","=="]: current_df=current_df[s_str==str(val_clean)]
-                    elif op=="!=": current_df=current_df[s_str!=str(val_clean)]
-            if debug_container: debug_container.caption(f"👉 Lọc '{val_clean}' -> Còn {len(current_df)}")
+                    val_str_cmp = str(val_clean)
+                    if op==">": current_df=current_df[s_str>val_str_cmp]
+                    elif op=="<": current_df=current_df[s_str<val_str_cmp]
+                    elif op==">=": current_df=current_df[s_str>=val_str_cmp]
+                    elif op=="<=": current_df=current_df[s_str<=val_str_cmp]
+                    elif op in ["=","=="]: current_df=current_df[s_str==val_str_cmp]
+                    elif op=="!=": current_df=current_df[s_str!=val_str_cmp]
+            
+            if debug_container: debug_container.caption(f"👉 Lọc '{val_clean}' ({op}) -> Còn {len(current_df)}")
         except Exception as e: return None, f"Lỗi '{fs}': {e}"
     return current_df, None
-
 def fetch_data_v4(row_config, bot_creds, target_headers=None, status_container=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
@@ -1113,6 +1164,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
