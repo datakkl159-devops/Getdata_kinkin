@@ -874,34 +874,46 @@ def load_full_config(_creds):
     return df
 
 def save_block_config_to_sheet(df_ui, blk_name, creds, uid):
+    # Kiểm tra khóa để tránh xung đột
     if not acquire_lock(creds, uid): st.error("Busy!"); return
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         wks = sh.worksheet(SHEET_CONFIG_NAME)
         
-        # [V108] Optimization: Read once, update locally
+        # 1. Lấy dữ liệu cũ từ trên Sheet về để giữ lại các khối khác
         df_svr = safe_get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
-        if df_svr is None or df_svr.empty: df_svr = pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
-        else: df_svr = df_svr.dropna(how='all').replace(['nan', 'None'], '')
+        if df_svr is None or df_svr.empty: 
+            df_svr = pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
+        else: 
+            df_svr = df_svr.dropna(how='all').replace(['nan', 'None'], '')
 
         if COL_BLOCK_NAME not in df_svr.columns: df_svr[COL_BLOCK_NAME] = DEFAULT_BLOCK_NAME
         
-        df_old_blk = df_svr[df_svr[COL_BLOCK_NAME] == blk_name].copy().reset_index(drop=True)
+        # 2. Lấy dữ liệu mới từ giao diện (đang chứa 9 dòng paste bị thiếu tên khối)
         df_new_blk = df_ui.copy().reset_index(drop=True)
         
-        # [V108] Convert boolean checkbox back to string "TRUE"/"FALSE" for Google Sheets
+        # ======================================================================
+        # [FIX CHÍNH] ĐÓNG DẤU TÊN KHỐI CHO TOÀN BỘ DÒNG
+        # ======================================================================
+        # Dòng lệnh này sẽ điền tên khối (vd: "Data_Thang_8") vào TẤT CẢ các dòng
+        # Bất kể dòng đó do bạn gõ tay hay paste vào.
+        df_new_blk[COL_BLOCK_NAME] = blk_name
+        # ======================================================================
+        
+        # 3. Xử lý các cột logic khác (Checkbox, Cleanup...)
         if COL_HEADER in df_new_blk.columns:
             df_new_blk[COL_HEADER] = df_new_blk[COL_HEADER].apply(lambda x: "TRUE" if x is True or str(x).lower()=='true' else "FALSE")
 
-        # Cleanup UI cols
+        # Xóa các cột tạm chỉ dùng cho giao diện
         ignore = ['STT', COL_COPY_FLAG, '_index', 'Che_Do_Ghi']
         for c in ignore: 
             if c in df_new_blk.columns: df_new_blk = df_new_blk.drop(columns=[c])
         
-        # Merge
+        # 4. Gộp dữ liệu: (Các khối khác) + (Khối hiện tại vừa sửa)
         df_oth = df_svr[df_svr[COL_BLOCK_NAME] != blk_name]
         df_fin = pd.concat([df_oth, df_new_blk], ignore_index=True).astype(str).replace(['nan', 'None'], '')
         
+        # 5. Ghi đè lại lên Sheet
         wks.clear(); safe_set_with_dataframe(wks, df_fin, row=1, col=1)
         st.toast("Saved!", icon="💾")
     finally: release_lock(creds, uid)
@@ -1174,6 +1186,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
