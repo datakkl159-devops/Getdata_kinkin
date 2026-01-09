@@ -696,21 +696,41 @@ def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, bot_creds, 
                 log_container.write("ℹ️ Không tìm thấy dữ liệu cũ để xóa (Ghi mới hoàn toàn).")
 
         # 5. Thực hiện GHI (Append xuống dòng cuối cùng)
+        # ... (đoạn trên giữ nguyên) ...
+
         if not final_df_to_write.empty:
-            # Sắp xếp cột cho khớp với file đích
+            # [FIX QUAN TRỌNG] CHỈ GHI CỘT CÓ TRONG DỮ LIỆU NGUỒN
+            # Code cũ: Lấy toàn bộ header file đích -> Cột nào thiếu thì điền "" -> Mất công thức
+            # Code mới: Chỉ lấy giao điểm (Intersection) giữa Header Đích và Dữ Liệu Nguồn
+            
+            # 1. Xác định các cột hệ thống bắt buộc phải có
+            sys_cols = [SYS_COL_LINK, SYS_COL_SHEET, SYS_COL_MONTH, SYS_COL_TIME]
+            
+            # 2. Lọc ra các cột cần ghi: Phải tồn tại trong file đích VÀ (có trong file nguồn HOẶC là cột hệ thống)
+            cols_to_write = []
+            for h in existing_headers:
+                if h in final_df_to_write.columns or h in sys_cols:
+                    cols_to_write.append(h)
+            
+            # 3. Chỉ tạo dataframe với các cột cho phép này
+            # Các cột thừa (như AA, AB chứa công thức) sẽ không có mặt trong df_aligned
             df_aligned = pd.DataFrame()
-            for col in existing_headers:
-                df_aligned[col] = final_df_to_write[col] if col in final_df_to_write.columns else ""
+            for col in cols_to_write:
+                # Nếu cột có trong data nguồn thì lấy, nếu là cột hệ thống mà chưa có thì để trống (sau này fillna)
+                if col in final_df_to_write.columns:
+                    df_aligned[col] = final_df_to_write[col]
+                else:
+                    df_aligned[col] = "" 
+
+            # ... (đoạn log giữ nguyên) ...
             
-            # Xác định dòng bắt đầu ghi (để log hiển thị)
-            # Lấy lại số dòng hiện tại sau khi đã xóa (nếu có)
-            current_vals = safe_api_call(wks.get_all_values)
-            start_row_idx = len(current_vals) + 1 if current_vals else 1
+            log_container.write(f"🚀 Đang ghi {len(df_aligned)} dòng mới...")
             
-            log_container.write(f"🚀 Đang ghi {len(df_aligned)} dòng mới từ dòng {start_row_idx}...")
-            
-            chunk_size = 5000
+            # 4. Ghi dữ liệu
+            # Vì df_aligned bây giờ ngắn hơn (chỉ A:Z), nên gspread chỉ ghi đè A:Z
+            # Cột AA trở đi nằm ngoài vùng ghi -> An toàn tuyệt đối
             new_vals = df_aligned.fillna('').values.tolist()
+            chunk_size = 5000
             for i in range(0, len(new_vals), chunk_size):
                 safe_api_call(wks.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
                 time.sleep(1)
@@ -1186,6 +1206,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
