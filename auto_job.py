@@ -288,8 +288,7 @@ def process_single_row_automation(row, bot_creds):
     tgt_link = str(row.get(COL_TGT_LINK, '')).strip()
     tgt_sheet_name = str(row.get(COL_TGT_SHEET, '')).strip() or "Tong_Hop_Data"
     
-    sid = extract_id(src_link)
-    tid = extract_id(tgt_link)
+    sid = extract_id(src_link); tid = extract_id(tgt_link)
     if not sid or not tid: return "Lỗi Link", 0, ""
 
     try:
@@ -319,7 +318,7 @@ def process_single_row_automation(row, bot_creds):
         
         df = pd.DataFrame(body_rows, columns=unique_headers)
         
-        # --- [FIX QUAN TRỌNG] Convert Numeric để tránh lỗi mất công thức ---
+        # Convert Numeric
         for c in df.columns:
             try: df[c] = pd.to_numeric(df[c])
             except: pass
@@ -349,6 +348,8 @@ def process_single_row_automation(row, bot_creds):
         except: ws_tgt = sh_tgt.add_worksheet(tgt_sheet_name, 1000, 20)
 
         existing_vals = safe_api_call(ws_tgt.get_all_values)
+        
+        # [FIX] Khởi tạo start_row_idx sớm
         start_row_idx = len(existing_vals) + 1 if existing_vals else 1
 
         if not existing_vals:
@@ -364,31 +365,27 @@ def process_single_row_automation(row, bot_creds):
                 ws_tgt.update(range_name="A1", values=[updated_headers])
                 tgt_headers = updated_headers
 
-            # --- [FIX QUAN TRỌNG] Chỉ map các cột có trong nguồn ---
-            # Bỏ qua các cột không có trong nguồn (giả sử là cột công thức ở cuối)
+            # Lọc cột an toàn
             sys_cols = [SYS_COL_LINK, SYS_COL_SHEET, SYS_COL_MONTH, SYS_COL_TIME]
             cols_to_write = []
-            
             for h in tgt_headers:
                 if h in df.columns or h in sys_cols:
                     cols_to_write.append(h)
             
-            # Tạo df chỉ chứa các cột an toàn
             df_aligned = pd.DataFrame()
             for col in cols_to_write:
                  if col in df.columns: df_aligned[col] = df[col]
-                 else: df_aligned[col] = "" # Cột hệ thống chờ điền
+                 else: df_aligned[col] = "" 
 
         # 7. Logic Ghi Đè / Nối Tiếp
         w_mode = str(row.get(COL_WRITE_MODE, 'Ghi Đè')).strip()
-        
         if "đè" in w_mode.lower() or "overwrite" in w_mode.lower():
-            # [FIX] Dùng ID để tìm dòng xóa
             keys_to_delete = set([(sid, src_sheet_name, month_val)])
             rows_to_del = get_rows_to_delete_dynamic(ws_tgt, keys_to_delete)
             if rows_to_del:
                 batch_delete_rows(sh_tgt, ws_tgt.id, rows_to_del)
                 time.sleep(3) 
+                # Cập nhật lại vị trí dòng sau khi xóa
                 current_vals = safe_api_call(ws_tgt.get_all_values)
                 start_row_idx = len(current_vals) + 1 if current_vals else 1
 
@@ -396,7 +393,6 @@ def process_single_row_automation(row, bot_creds):
         chunk_size = 5000
         new_vals = df_aligned.fillna('').values.tolist()
         
-        # [QUAN TRỌNG] Chỉ ghi số lượng cột tương ứng, không ghi đè cột ngoài vùng
         for i in range(0, len(new_vals), chunk_size):
             safe_api_call(ws_tgt.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
             time.sleep(1)
@@ -407,7 +403,6 @@ def process_single_row_automation(row, bot_creds):
 
     except Exception as e:
         return f"Lỗi: {str(e)[:50]}", 0, "Error"
-
 # ==========================================
 # 5. SCHEDULER & MAIN LOOP
 # ==========================================
