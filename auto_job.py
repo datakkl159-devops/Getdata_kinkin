@@ -462,7 +462,7 @@ def get_jobs(gc_master):
 
         last_run_map = {}
         try:
-            logs = sh.worksheet(SHEET_LOG_NAME).get_all_values()[-300:]
+            logs = sh.worksheet(SHEET_LOG_NAME).get_all_values()[-2000:]
             for row in reversed(logs):
                 if len(row) > 11 and row[10] == "Auto": # Cột 10 là Type, 11 là Block
                     try: last_run_map[row[11]] = TZ_VN.localize(datetime.strptime(row[0], "%d/%m/%Y %H:%M:%S"))
