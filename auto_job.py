@@ -474,10 +474,13 @@ def get_jobs(gc_master):
             logs = sh.worksheet(SHEET_LOG_NAME).get_all_values()[-2000:]
             for row in reversed(logs):
                 if len(row) > 11 and row[10] == "Auto": 
-                    # [FIX] Sử dụng hàm parse_log_date thông minh (đã cắt dấu ')
+                    blk_name = row[11]
                     d_parsed = parse_log_date(row[0])
-                    if d_parsed:
-                        last_run_map[row[11]] = TZ_VN.localize(d_parsed)
+                    
+                    # [FIX QUAN TRỌNG] Chỉ lấy dòng đầu tiên tìm thấy (là dòng mới nhất)
+                    # Nếu đã có trong danh sách rồi thì BỎ QUA các dòng cũ hơn phía sau
+                    if blk_name not in last_run_map and d_parsed:
+                        last_run_map[blk_name] = TZ_VN.localize(d_parsed)
         except Exception as e: 
             print(f"Lỗi đọc log: {e}")
 
