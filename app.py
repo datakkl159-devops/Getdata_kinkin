@@ -1,4 +1,3 @@
-@@ -1,1228 +1,1207 @@
 import streamlit as st
 import pandas as pd
 import time
@@ -1240,3 +1239,4 @@ def main_ui():
 # if __name__ == "__main__": ... (Giữ nguyên)
 
 if __name__ == "__main__":
+
