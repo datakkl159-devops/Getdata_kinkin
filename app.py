@@ -1238,5 +1238,6 @@ def main_ui():
 
 # if __name__ == "__main__": ... (Giữ nguyên)
 
-if __name__ == "__main__"
+if __name__ == "__main__":
+    main_ui()
 
