@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import pytz
 from google.oauth2 import service_account
 from gspread_dataframe import get_as_dataframe
+import warnings
 
 # ==========================================
 # 0. CẤU HÌNH MÔI TRƯỜNG & HẰNG SỐ
@@ -24,13 +25,13 @@ SHEET_ID = os.environ.get("HISTORY_SHEET_ID")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# Tên các Sheet (Phải khớp 100% với app.py)
+# Tên các Sheet
 SHEET_CONFIG_NAME = "luu_cau_hinh"
 SHEET_LOG_NAME = "log_lanthucthi"
 SHEET_BEHAVE_NAME = "log_hanh_vi"
 SHEET_SYS_CONFIG = "sys_config"
 
-# Định nghĩa cột (Mapping với Google Sheet)
+# Định nghĩa cột
 COL_BLOCK_NAME = "Block_Name"; COL_STATUS = "Trạng thái"
 COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"; COL_SRC_SHEET = "Tên sheet nguồn dữ liệu gốc"
 COL_TGT_LINK = "Link dữ liệu đích"; COL_TGT_SHEET = "Tên sheet dữ liệu đích"
@@ -38,7 +39,7 @@ COL_DATA_RANGE = "Vùng lấy dữ liệu"; COL_MONTH = "Tháng"
 COL_FILTER = "Dieu_Kien_Loc"; COL_HEADER = "Lay_Header"; COL_WRITE_MODE = "Cach_Ghi"
 COL_RESULT = "Kết quả"; COL_LOG_ROW = "Dòng dữ liệu"
 
-# Cột hệ thống thêm vào file đích
+# Cột hệ thống
 SYS_COL_LINK = "Src_Link"; SYS_COL_SHEET = "Src_Sheet"
 SYS_COL_MONTH = "Month"; SYS_COL_TIME = "Thời điểm ghi"
 
@@ -109,30 +110,51 @@ def write_behavior_log(gc, action, target, detail, status="Completed"):
         sh = gc.open_by_key(SHEET_ID)
         try: wks = sh.worksheet(SHEET_BEHAVE_NAME)
         except: wks = sh.add_worksheet(SHEET_BEHAVE_NAME, 1000, 10)
-        now_str = datetime.now(TZ_VN).strftime("%d/%m/%Y %H:%M:%S")
+        # [FIX] Thêm dấu ' vào log hành vi luôn
+        now_str = "'" + datetime.now(TZ_VN).strftime("%d/%m/%Y %H:%M:%S")
         wks.append_row([now_str, "Auto_Runner", action, target, detail, status])
     except: pass
 
 def update_config_result(wks_config, row_idx, status_text, range_text):
     """Cập nhật trực tiếp kết quả vào sheet Config để App hiển thị"""
     try:
-        # Tìm cột Kết quả và Dòng dữ liệu (giả sử header ở dòng 1)
         headers = wks_config.row_values(1)
         try:
             col_res = headers.index(COL_RESULT) + 1
             col_row = headers.index(COL_LOG_ROW) + 1
-            # Row index trong dataframe bắt đầu từ 0, trong sheet là +2 (1 cho header, 1 cho index 0)
             sheet_row = row_idx + 2 
             wks_config.update_cell(sheet_row, col_res, status_text)
             wks_config.update_cell(sheet_row, col_row, range_text)
         except: pass
     except: pass
 
+# --- [QUAN TRỌNG] HÀM ĐỌC NGÀY THÁNG ĐA NĂNG ---
+def parse_log_date(date_str):
+    """
+    Đọc ngày tháng từ Log, tự động bỏ dấu ' ở đầu nếu có.
+    Hỗ trợ nhiều định dạng để tránh lỗi.
+    """
+    if not date_str: return None
+    # [FIX] Cắt bỏ dấu nháy đơn và khoảng trắng thừa
+    cleaned_str = str(date_str).strip().lstrip("'")
+    
+    formats = [
+        "%d/%m/%Y %H:%M:%S", # 31/12/2025 14:18:11
+        "%d/%m/%Y %H:%M",    # 31/12/2025 14:18
+        "%m/%d/%Y %H:%M:%S", # Kiểu Mỹ
+        "%Y-%m-%d %H:%M:%S", # ISO
+        "%d/%m/%Y",          # Chỉ ngày
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(cleaned_str, fmt)
+        except: continue
+    return None
+
 # ==========================================
-# 2. XỬ LÝ NGÀY ĐỘNG & BỘ LỌC (SMART FILTER V90)
+# 2. XỬ LÝ NGÀY ĐỘNG & BỘ LỌC
 # ==========================================
 def parse_dynamic_date(val_str):
-    """Xử lý TODAY, TODAY-1, YESTERDAY"""
     if not isinstance(val_str, str): return val_str
     val_upper = val_str.strip().upper().replace(" ", "").replace("'", "").replace('"', "")
     now = datetime.now(TZ_VN).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -180,7 +202,9 @@ def apply_smart_filter_auto(df, filter_str):
                     is_dt = True; v_dt = pd.to_datetime(val_resolved).tz_localize(None)
                 else:
                     try: 
-                        s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
                         v_dt_try = pd.to_datetime(val_clean, dayfirst=True)
                         if s_dt.notna().any() and pd.notna(v_dt_try): is_dt = True; v_dt = v_dt_try
                     except: pass
@@ -191,7 +215,9 @@ def apply_smart_filter_auto(df, filter_str):
                     except: pass
                 
                 if is_dt:
-                    s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
                     if op==">": current_df=current_df[s_dt>v_dt]
                     elif op=="<": current_df=current_df[s_dt<v_dt]
                     elif op==">=": current_df=current_df[s_dt>=v_dt]
@@ -220,10 +246,6 @@ def apply_smart_filter_auto(df, filter_str):
 # 3. LOGIC GHI & XÓA (DEEP SCAN & ID MATCH)
 # ==========================================
 def get_rows_to_delete_dynamic(wks, keys_to_delete):
-    """
-    Quét toàn bộ sheet để tìm dòng cần xóa.
-    So sánh bằng ID File (trích xuất từ Link) + Sheet + Tháng.
-    """
     try:
         all_values = safe_api_call(wks.get_all_values)
         if not all_values or len(all_values) < 2: return []
@@ -236,28 +258,28 @@ def get_rows_to_delete_dynamic(wks, keys_to_delete):
         
         if header_row_idx == -1: return []
 
-        try:
-            idx_link = headers.index(SYS_COL_LINK.lower())
-            idx_sheet = headers.index(SYS_COL_SHEET.lower())
-            idx_month = headers.index(SYS_COL_MONTH.lower())
-        except ValueError: return []
+        idx_link = headers.index(SYS_COL_LINK.lower())
+        idx_sheet = headers.index(SYS_COL_SHEET.lower())
+        idx_month = headers.index(SYS_COL_MONTH.lower())
 
         rows_to_delete = []
-        total_rows = len(all_values)
         
-        for i in range(header_row_idx + 1, total_rows):
+        normalized_keys = set()
+        for k_id, k_sh, k_mo in keys_to_delete:
+            normalized_keys.add((str(k_id).strip(), str(k_sh).strip().lower(), str(k_mo).strip().lower()))
+
+        for i in range(header_row_idx + 1, len(all_values)):
             row = all_values[i]
             if len(row) <= max(idx_link, idx_sheet, idx_month): continue
             
-            # [FIX] Trích xuất ID từ link trong cell để so sánh chuẩn xác
             val_link_raw = str(row[idx_link]).strip()
             val_id = extract_id(val_link_raw)
             if not val_id: val_id = val_link_raw 
             
-            val_sheet = str(row[idx_sheet]).strip()
-            val_month = str(row[idx_month]).strip()
+            val_sheet = str(row[idx_sheet]).strip().lower()
+            val_month = str(row[idx_month]).strip().lower()
             
-            if (val_id, val_sheet, val_month) in keys_to_delete:
+            if (val_id, val_sheet, val_month) in normalized_keys:
                 rows_to_delete.append(i + 1)
 
         return rows_to_delete
@@ -279,7 +301,7 @@ def batch_delete_rows(sh, sheet_id, row_indices):
         time.sleep(1)
 
 # ==========================================
-# 4. CORE PIPELINE (FETCH + PROCESS + WRITE)
+# 4. CORE PIPELINE
 # ==========================================
 def process_single_row_automation(row, bot_creds):
     src_link = str(row.get(COL_SRC_LINK, '')).strip()
@@ -292,14 +314,12 @@ def process_single_row_automation(row, bot_creds):
     if not sid or not tid: return "Lỗi Link", 0, ""
 
     try:
-        # 1. Fetch Data
         gc = gspread.authorize(bot_creds)
         sh_src = safe_api_call(gc.open_by_key, sid)
         ws_src = sh_src.worksheet(src_sheet_name) if src_sheet_name else sh_src.sheet1
         data = safe_api_call(ws_src.get_all_values)
         if not data: return "Sheet trắng", 0, "0 dòng"
 
-        # 2. Xử lý Range
         data_range = str(row.get(COL_DATA_RANGE, '')).strip().upper()
         if ":" in data_range and len(data_range) < 10 and "LẤY HẾT" not in data_range:
             try:
@@ -317,43 +337,36 @@ def process_single_row_automation(row, bot_creds):
             else: seen[col_str] = 0; unique_headers.append(col_str)
         
         df = pd.DataFrame(body_rows, columns=unique_headers)
-        
-        # Convert Numeric
         for c in df.columns:
             try: df[c] = pd.to_numeric(df[c])
             except: pass
 
-        # 3. Lọc Smart Filter
         filter_cond = str(row.get(COL_FILTER, '')).strip()
         if filter_cond and filter_cond.lower() not in ['nan', 'none']:
             df = apply_smart_filter_auto(df, filter_cond)
         
         if df.empty: return "Thành công (Lọc hết)", 0, "0 dòng"
 
-        # 4. Xử lý Header
         h_val = str(row.get(COL_HEADER, 'FALSE')).strip().upper()
         if h_val == 'TRUE':
             header_df = pd.DataFrame([df.columns.tolist()], columns=df.columns)
             df = pd.concat([header_df, df], ignore_index=True)
 
-        # 5. Thêm cột Hệ thống
         df[SYS_COL_LINK] = src_link
         df[SYS_COL_SHEET] = src_sheet_name
         df[SYS_COL_MONTH] = month_val
-        df[SYS_COL_TIME] = datetime.now(TZ_VN).strftime("%d/%m/%Y")
+        
+        # [FIX] Thời gian ghi vào sheet đích cũng nên thêm ' để tránh nhảy định dạng
+        df[SYS_COL_TIME] = "'" + datetime.now(TZ_VN).strftime("%d/%m/%Y %H:%M:%S")
 
-        # 6. Chuẩn bị File Đích
         sh_tgt = safe_api_call(gc.open_by_key, tid)
         try: ws_tgt = sh_tgt.worksheet(tgt_sheet_name)
         except: ws_tgt = sh_tgt.add_worksheet(tgt_sheet_name, 1000, 20)
 
         existing_vals = safe_api_call(ws_tgt.get_all_values)
-        
-        # [FIX] Khởi tạo start_row_idx sớm
         start_row_idx = len(existing_vals) + 1 if existing_vals else 1
 
         if not existing_vals:
-            # Sheet mới -> Ghi luôn
             ws_tgt.update([df.columns.tolist()] + df.fillna("").values.tolist())
             return "Thành công (New)", len(df), f"1 - {len(df)}"
         else:
@@ -365,7 +378,6 @@ def process_single_row_automation(row, bot_creds):
                 ws_tgt.update(range_name="A1", values=[updated_headers])
                 tgt_headers = updated_headers
 
-            # Lọc cột an toàn
             sys_cols = [SYS_COL_LINK, SYS_COL_SHEET, SYS_COL_MONTH, SYS_COL_TIME]
             cols_to_write = []
             for h in tgt_headers:
@@ -377,7 +389,6 @@ def process_single_row_automation(row, bot_creds):
                  if col in df.columns: df_aligned[col] = df[col]
                  else: df_aligned[col] = "" 
 
-        # 7. Logic Ghi Đè / Nối Tiếp
         w_mode = str(row.get(COL_WRITE_MODE, 'Ghi Đè')).strip()
         if "đè" in w_mode.lower() or "overwrite" in w_mode.lower():
             keys_to_delete = set([(sid, src_sheet_name, month_val)])
@@ -385,14 +396,11 @@ def process_single_row_automation(row, bot_creds):
             if rows_to_del:
                 batch_delete_rows(sh_tgt, ws_tgt.id, rows_to_del)
                 time.sleep(3) 
-                # Cập nhật lại vị trí dòng sau khi xóa
                 current_vals = safe_api_call(ws_tgt.get_all_values)
                 start_row_idx = len(current_vals) + 1 if current_vals else 1
 
-        # 8. Ghi dữ liệu
         chunk_size = 5000
         new_vals = df_aligned.fillna('').values.tolist()
-        
         for i in range(0, len(new_vals), chunk_size):
             safe_api_call(ws_tgt.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
             time.sleep(1)
@@ -403,6 +411,7 @@ def process_single_row_automation(row, bot_creds):
 
     except Exception as e:
         return f"Lỗi: {str(e)[:50]}", 0, "Error"
+
 # ==========================================
 # 5. SCHEDULER & MAIN LOOP
 # ==========================================
@@ -454,7 +463,6 @@ def get_jobs(gc_master):
         sh = gc_master.open_by_key(SHEET_ID)
         df_cfg = get_as_dataframe(sh.worksheet(SHEET_CONFIG_NAME), evaluate_formulas=True, dtype=str)
         df_active = df_cfg[df_cfg[COL_STATUS].astype(str).str.contains('Chưa chốt', case=False, na=False)]
-        
         active_blocks = [b for b in df_active[COL_BLOCK_NAME].unique() if b and str(b).strip() != '']
 
         try: df_sched = get_as_dataframe(sh.worksheet(SHEET_SYS_CONFIG), evaluate_formulas=True, dtype=str)
@@ -462,25 +470,29 @@ def get_jobs(gc_master):
 
         last_run_map = {}
         try:
+            # Tăng số lượng dòng đọc để chắc chắn
             logs = sh.worksheet(SHEET_LOG_NAME).get_all_values()[-2000:]
             for row in reversed(logs):
-                if len(row) > 11 and row[10] == "Auto": # Cột 10 là Type, 11 là Block
-                    try: last_run_map[row[11]] = TZ_VN.localize(datetime.strptime(row[0], "%d/%m/%Y %H:%M:%S"))
-                    except: pass
-        except: pass
+                if len(row) > 11 and row[10] == "Auto": 
+                    # [FIX] Sử dụng hàm parse_log_date thông minh (đã cắt dấu ')
+                    d_parsed = parse_log_date(row[0])
+                    if d_parsed:
+                        last_run_map[row[11]] = TZ_VN.localize(d_parsed)
+        except Exception as e: 
+            print(f"Lỗi đọc log: {e}")
 
         jobs = []
         for blk in active_blocks:
             should, r = check_block_due(blk, df_sched, last_run_map.get(blk))
-            if should: jobs.append(blk)
+            if should: 
+                print(f"✅ Job Found: {blk} | Reason: {r}")
+                jobs.append(blk)
         return jobs
     except: return []
 
 if __name__ == "__main__":
     start_time = datetime.now(TZ_VN).strftime('%H:%M:%S %d/%m')
     print(f"🚀 START AUTO: {start_time}")
-    
-    # [THÔNG BÁO] Gửi tin nhắn Telegram khi bắt đầu
     send_telegram(f"🏁 <b>Kinkin Tool Bắt Đầu Chạy</b>\n🕒 Lúc: {start_time}")
 
     try:
@@ -503,7 +515,7 @@ if __name__ == "__main__":
             if not bot_creds: continue
 
             sh = gc_master.open_by_key(SHEET_ID)
-            wks_cfg = sh.worksheet(SHEET_CONFIG_NAME) # Mở config để ghi kết quả
+            wks_cfg = sh.worksheet(SHEET_CONFIG_NAME) 
             df_cfg = get_as_dataframe(wks_cfg, evaluate_formulas=True, dtype=str)
             
             rows = df_cfg[(df_cfg[COL_BLOCK_NAME] == blk) & (df_cfg[COL_STATUS].str.contains('Chưa chốt', na=False))]
@@ -515,28 +527,25 @@ if __name__ == "__main__":
                 print(f"  + Row {i}: {status} ({count})")
                 total_rows += count
                 
-                # 1. Update kết quả trực tiếp lên Config (Để app hiển thị)
                 update_config_result(wks_cfg, i, status, range_str)
                 
-                # 2. Log kỹ thuật
+                # [FIX QUAN TRỌNG] Thêm dấu nháy đơn ' vào trước để Google Sheet hiểu là Text
+                time_str = "'" + datetime.now(TZ_VN).strftime("%d/%m/%Y %H:%M:%S")
+                
                 log_buffer.append([
-                    datetime.now(TZ_VN).strftime("%d/%m/%Y %H:%M:%S"), r.get(COL_DATA_RANGE), r.get(COL_MONTH), "Auto_Runner",
+                    time_str, r.get(COL_DATA_RANGE), r.get(COL_MONTH), "Auto_Runner",
                     r.get(COL_SRC_LINK), r.get(COL_TGT_LINK), r.get(COL_TGT_SHEET), r.get(COL_SRC_SHEET),
                     status, count, "Auto", blk
                 ])
             
-            # 3. Ghi log kỹ thuật vào Sheet Log
             if log_buffer:
                 try: sh.worksheet(SHEET_LOG_NAME).append_rows(log_buffer)
                 except: pass
             
-            # 4. Ghi log hành vi tổng quan
             write_behavior_log(gc_master, "Chạy Tự Động", blk, f"Xử lý xong {total_rows} dòng", "Completed")
             success_msgs.append(f"• <b>{blk}</b>: {total_rows} dòng")
-            
             time.sleep(5)
 
-        # [THÔNG BÁO] Gửi tin nhắn Telegram khi kết thúc
         if success_msgs:
             end_time = datetime.now(TZ_VN).strftime('%H:%M')
             msg = f"✅ <b>ĐÃ XONG:</b> {end_time}\n{chr(10).join(success_msgs)}"
