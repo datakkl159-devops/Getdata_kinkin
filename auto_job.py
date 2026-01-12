@@ -419,45 +419,84 @@ def parse_weekday(day_str):
     map_day = {'T2':0, 'T3':1, 'T4':2, 'T5':3, 'T6':4, 'T7':5, 'CN':6}
     return map_day.get(str(day_str).upper().strip(), -1)
 
+# ==========================================
+# CẬP NHẬT: CHECK BLOCK DUE (Hiển thị chi tiết giờ cài đặt)
+# ==========================================
 def check_block_due(block_name, sched_df, last_run_time):
     now = datetime.now(TZ_VN)
     row = sched_df[sched_df['Block_Name'] == block_name]
-    if row.empty: return False, "No Config"
+    if row.empty: return False, "Không tìm thấy cấu hình trong sys_config"
     
     row = row.iloc[0]
     l_type = str(row.get('Loai_Lich', '')).strip()
-    val1 = str(row.get('Thong_So_Chinh', '')).strip()
-    val2 = str(row.get('Thong_So_Phu', '')).strip()
+    val1 = str(row.get('Thong_So_Chinh', '')).strip() # Giờ hoặc Phút
+    val2 = str(row.get('Thong_So_Phu', '')).strip()   # Thứ hoặc Ngày
     
-    if l_type == "Không chạy": return False, "Disabled"
+    config_info = f"[Cài đặt: {l_type} | {val1} {val2}]"
+
+    if l_type == "Không chạy": return False, f"Đang tắt (Disable) {config_info}"
     
     has_run_today = False
     if last_run_time and last_run_time.date() == now.date(): has_run_today = True
 
+    # 1. LOGIC CHẠY THEO PHÚT
     if l_type == "Chạy theo phút":
-        if not last_run_time: return True, "First Run"
+        if not last_run_time: return True, "Chạy lần đầu tiên"
         try:
-            if ((now - last_run_time).total_seconds()/60) >= int(val1): return True, "Interval Met"
+            interval = int(val1)
+            diff_min = (now - last_run_time).total_seconds() / 60
+            if diff_min >= interval: 
+                return True, f"Đủ thời gian (Trôi qua: {int(diff_min)}/{interval} phút)"
+            else:
+                return False, f"Chưa đủ thời gian (Mới qua: {int(diff_min)}/{interval} phút)"
         except: pass
-        return False, "Wait Interval"
+        return False, f"Lỗi cấu hình phút {config_info}"
         
-    try: target_hour = int(val1.split(':')[0])
-    except: return False, "Bad Hour"
-    time_ok = now.hour >= target_hour
+    # 2. LOGIC THEO GIỜ CỐ ĐỊNH (NGÀY, TUẦN, THÁNG)
+    try: 
+        target_hour = int(val1.split(':')[0])
+        target_min = int(val1.split(':')[1]) if ':' in val1 else 0
+    except: return False, f"Lỗi định dạng giờ {config_info}"
 
+    # Kiểm tra giờ
+    # Ví dụ: Cài 07:00. Bây giờ là 06:59 -> False. Bây giờ 07:01 -> True
+    time_ok = (now.hour > target_hour) or (now.hour == target_hour and now.minute >= target_min)
+
+    if not time_ok: 
+        return False, f"Chưa đến giờ chạy (Hiện tại: {now.strftime('%H:%M')} < Cài đặt: {val1})"
+
+    if has_run_today: 
+        return False, f"Hôm nay đã chạy rồi (Lúc: {last_run_time.strftime('%H:%M:%S')}) {config_info}"
+
+    # A. Hàng ngày
     if l_type == "Hàng ngày":
-        return (time_ok and not has_run_today), "Daily Check"
+        return True, f"Đến giờ chạy hàng ngày {config_info}"
 
+    # B. Hàng tuần
     if l_type == "Hàng tuần":
-        correct_day = now.weekday() in [parse_weekday(d) for d in val2.split(',')]
-        return (correct_day and time_ok and not has_run_today), "Weekly Check"
+        current_weekday = now.weekday() # 0=T2, 6=CN
+        target_days = [parse_weekday(d) for d in val2.split(',')]
+        if current_weekday in target_days:
+            return True, f"Đúng lịch Hàng Tuần {config_info}"
+        else:
+            return False, f"Hôm nay không phải thứ chạy (Cài đặt: {val2})"
         
+    # C. Hàng tháng
     if l_type == "Hàng tháng":
-        correct_day = now.day in [int(d) for d in val2.split(',') if d.strip().isdigit()]
-        return (correct_day and time_ok and not has_run_today), "Monthly Check"
+        try:
+            target_dates = [int(d) for d in val2.split(',') if d.strip().isdigit()]
+            if now.day in target_dates:
+                return True, f"Đúng lịch Hàng Tháng {config_info}"
+            else:
+                return False, f"Hôm nay không phải ngày chạy (Cài đặt ngày: {val2})"
+        except: pass
+        return False, f"Lỗi cấu hình ngày tháng {config_info}"
 
-    return False, "No Match"
+    return False, f"Không khớp loại lịch nào {config_info}"
 
+# ==========================================
+# CẬP NHẬT: GET JOBS (Thêm phần in log khi Skip)
+# ==========================================
 def get_jobs(gc_master):
     try:
         sh = gc_master.open_by_key(SHEET_ID)
@@ -468,30 +507,38 @@ def get_jobs(gc_master):
         try: df_sched = get_as_dataframe(sh.worksheet(SHEET_SYS_CONFIG), evaluate_formulas=True, dtype=str)
         except: return []
 
+        # --- ĐOẠN LOGIC ĐỌC LOG CŨ (Đã Fix lỗi chạy lại) ---
         last_run_map = {}
         try:
-            # Tăng số lượng dòng đọc để chắc chắn
             logs = sh.worksheet(SHEET_LOG_NAME).get_all_values()[-2000:]
             for row in reversed(logs):
                 if len(row) > 11 and row[10] == "Auto": 
                     blk_name = row[11]
                     d_parsed = parse_log_date(row[0])
-                    
-                    # [FIX QUAN TRỌNG] Chỉ lấy dòng đầu tiên tìm thấy (là dòng mới nhất)
-                    # Nếu đã có trong danh sách rồi thì BỎ QUA các dòng cũ hơn phía sau
+                    # Chỉ lấy dòng log MỚI NHẤT cho mỗi block
                     if blk_name not in last_run_map and d_parsed:
                         last_run_map[blk_name] = TZ_VN.localize(d_parsed)
         except Exception as e: 
             print(f"Lỗi đọc log: {e}")
+        # ----------------------------------------------------
 
         jobs = []
+        print("\n--- 🔍 KIỂM TRA LỊCH TRÌNH ---")
         for blk in active_blocks:
-            should, r = check_block_due(blk, df_sched, last_run_map.get(blk))
+            should, reason = check_block_due(blk, df_sched, last_run_map.get(blk))
+            
             if should: 
-                print(f"✅ Job Found: {blk} | Reason: {r}")
+                print(f"✅ [CHẠY NGAY] {blk} | Lý do: {reason}")
                 jobs.append(blk)
+            else:
+                # [NEW] In ra lý do tại sao không chạy
+                print(f"💤 [BỎ QUA] {blk} | {reason}")
+                
+        print("------------------------------\n")
         return jobs
-    except: return []
+    except Exception as e: 
+        print(f"Lỗi get_jobs: {e}")
+        return []
 
 if __name__ == "__main__":
     start_time = datetime.now(TZ_VN).strftime('%H:%M:%S %d/%m')
