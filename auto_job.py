@@ -177,7 +177,7 @@ def apply_smart_filter_auto(df, filter_str):
             else:
                 is_dt = False; v_dt = None
                 if isinstance(val_resolved, datetime):
-                    is_dt = True; v_dt = pd.to_datetime(val_resolved)
+                    is_dt = True; v_dt = pd.to_datetime(val_resolved).tz_localize(None)
                 else:
                     try: 
                         s_dt = pd.to_datetime(series, dayfirst=True, errors='coerce')
