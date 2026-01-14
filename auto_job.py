@@ -306,7 +306,18 @@ def batch_delete_rows(sh, sheet_id, row_indices):
 def process_single_row_automation(row, bot_creds):
     src_link = str(row.get(COL_SRC_LINK, '')).strip()
     src_sheet_name = str(row.get(COL_SRC_SHEET, '')).strip()
-    month_val = str(row.get(COL_MONTH, ''))
+    # [FIX] Chuẩn hóa Tháng: Luôn đảm bảo dạng 01/2026 (2 chữ số cho tháng)
+    month_raw = str(row.get(COL_MONTH, '')).strip()
+    month_val = month_raw
+    if "/" in month_raw:
+        try:
+            parts = month_raw.split("/")
+            if len(parts) == 2:
+                m_part, y_part = parts
+                # Nếu tháng chỉ có 1 chữ số (vd: 1, 2..9) -> Thêm số 0 đằng trước
+                if len(m_part) == 1 and m_part.isdigit():
+                    month_val = f"0{m_part}/{y_part}"
+        except: pass
     tgt_link = str(row.get(COL_TGT_LINK, '')).strip()
     tgt_sheet_name = str(row.get(COL_TGT_SHEET, '')).strip() or "Tong_Hop_Data"
     
