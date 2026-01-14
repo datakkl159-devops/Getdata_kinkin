@@ -486,7 +486,18 @@ def apply_smart_filter_v90(df, filter_str, debug_container=None):
 def fetch_data_v4(row_config, bot_creds, target_headers=None, status_container=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
-    month_val = str(row_config.get(COL_MONTH, ''))
+    # [FIX] Chuẩn hóa Tháng: Luôn đảm bảo dạng 01/2026 (2 chữ số cho tháng)
+    month_raw = str(row_config.get(COL_MONTH, '')).strip()
+    month_val = month_raw
+    if "/" in month_raw:
+        try:
+            parts = month_raw.split("/")
+            if len(parts) == 2:
+                m_part, y_part = parts
+                # Nếu tháng chỉ có 1 chữ số (vd: 1, 2..9) -> Thêm số 0 đằng trước
+                if len(m_part) == 1 and m_part.isdigit():
+                    month_val = f"0{m_part}/{y_part}"
+        except: pass
     raw_range = str(row_config.get(COL_DATA_RANGE, '')).strip()
     data_range_str = "Lấy hết" if raw_range.lower() in ['nan', 'none', 'null', '', 'lấy hết'] else raw_range
     raw_filter = str(row_config.get(COL_FILTER, '')).strip()
@@ -1240,4 +1251,5 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
